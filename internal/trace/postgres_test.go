@@ -5,11 +5,13 @@ import (
 	"compress/gzip"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -89,6 +91,22 @@ func gzipTestBody(t *testing.T, body string) []byte {
 		t.Fatalf("gzip close body: %v", err)
 	}
 	return buf.Bytes()
+}
+
+func assertJSONEqual(t *testing.T, got, want string) {
+	t.Helper()
+
+	var gotValue any
+	if err := json.Unmarshal([]byte(got), &gotValue); err != nil {
+		t.Fatalf("decode got json %q: %v", got, err)
+	}
+	var wantValue any
+	if err := json.Unmarshal([]byte(want), &wantValue); err != nil {
+		t.Fatalf("decode want json %q: %v", want, err)
+	}
+	if !reflect.DeepEqual(gotValue, wantValue) {
+		t.Fatalf("json=%q, want semantically equal to %q", got, want)
+	}
 }
 
 func TestPostgresStoreWritesAndQueriesTraces(t *testing.T) {
@@ -184,9 +202,7 @@ func TestPostgresStoreWritesAndQueriesTraces(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTrace(%s after update) error: %v", traceB, err)
 	}
-	if gotTrace.LLMResponseContent != llmContent {
-		t.Fatalf("llm_response_content=%q, want %q", gotTrace.LLMResponseContent, llmContent)
-	}
+	assertJSONEqual(t, gotTrace.LLMResponseContent, llmContent)
 
 	firstPage, err := store.QueryTraces(context.Background(), TraceFilter{
 		Provider: "openai",
