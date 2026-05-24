@@ -333,6 +333,9 @@ func (r *Runner) writeAndUploadReadme(ctx context.Context, result *Result) error
 	}); err != nil {
 		return err
 	}
+	if err := os.Remove(localPath); err != nil {
+		return fmt.Errorf("remove uploaded backup readme %s: %w", fileName, err)
+	}
 	return nil
 }
 

@@ -61,6 +61,9 @@ func TestRunnerWritesGzipNDJSONNamesDeletesPartsAndUploadsReadmeLast(t *testing.
 	if uploads[3].key != "archives/team-a/260524/readme_260524.txt" {
 		t.Fatalf("last upload key=%q, want readme last", uploads[3].key)
 	}
+	if _, err := os.Stat(uploads[3].localPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("readme still exists after upload, stat err=%v", err)
+	}
 
 	readme := string(uploads[3].body)
 	for _, want := range []string{
