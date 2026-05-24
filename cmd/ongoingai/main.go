@@ -17,6 +17,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	_ "time/tzdata" // embed IANA timezone data for scratch container images
 
 	"github.com/ongoingai/gateway/internal/api"
 	"github.com/ongoingai/gateway/internal/auth"
