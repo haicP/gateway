@@ -81,6 +81,7 @@ func TestSQLiteStoreConfiguresWALAndWritesTrace(t *testing.T) {
 		RequestBody:        `{"model":"gpt-4o-mini"}`,
 		ResponseStatus:     200,
 		ResponseBody:       `{"id":"chatcmpl-1"}`,
+		LLMResponseContent: `{"schema_version":"llm_response_content.v1","parts":[{"type":"text","text":"hello"}]}`,
 		InputTokens:        10,
 		OutputTokens:       20,
 		TotalTokens:        30,
@@ -119,6 +120,14 @@ func TestSQLiteStoreConfiguresWALAndWritesTrace(t *testing.T) {
 	}
 	if orgID != "default" || workspaceID != "default" {
 		t.Fatalf("stored org/workspace=%s/%s, want default/default", orgID, workspaceID)
+	}
+
+	got, err := store.GetTrace(context.Background(), row.ID)
+	if err != nil {
+		t.Fatalf("GetTrace() error: %v", err)
+	}
+	if got.LLMResponseContent != row.LLMResponseContent {
+		t.Fatalf("llm_response_content=%q, want %q", got.LLMResponseContent, row.LLMResponseContent)
 	}
 }
 
@@ -194,6 +203,9 @@ CREATE TABLE traces (
 	if !sqliteHasColumn(t, store.db, "traces", "gateway_key_id") {
 		t.Fatal("expected legacy schema to be upgraded with gateway_key_id column")
 	}
+	if !sqliteHasColumn(t, store.db, "traces", "llm_response_content") {
+		t.Fatal("expected legacy schema to be upgraded with llm_response_content column")
+	}
 }
 
 func TestSQLiteStoreCreatesQueryIndexes(t *testing.T) {
@@ -250,6 +262,12 @@ func TestSQLiteStoreRecordsAppliedMigrations(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("migration count=%d, want 1 for sqlite/002_add_gateway_key_id.sql", count)
+	}
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE name = ?`, "sqlite/003_llm_response_content.sql").Scan(&count); err != nil {
+		t.Fatalf("query schema_migrations for llm response content migration: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("migration count=%d, want 1 for sqlite/003_llm_response_content.sql", count)
 	}
 }
 
@@ -400,6 +418,17 @@ func TestSQLiteStoreGetTraceAndQueryTraces(t *testing.T) {
 	if gotTrace.Provider != "anthropic" || gotTrace.ResponseStatus != 500 {
 		t.Fatalf("GetTrace(trace-b) got provider/status=%s/%d", gotTrace.Provider, gotTrace.ResponseStatus)
 	}
+	llmContent := `{"schema_version":"llm_response_content.v1","parts":[{"type":"text","text":"stored"}]}`
+	if err := store.UpdateLLMResponseContent(context.Background(), "trace-b", llmContent); err != nil {
+		t.Fatalf("UpdateLLMResponseContent() error: %v", err)
+	}
+	gotTrace, err = store.GetTrace(context.Background(), "trace-b")
+	if err != nil {
+		t.Fatalf("GetTrace(trace-b after update) error: %v", err)
+	}
+	if gotTrace.LLMResponseContent != llmContent {
+		t.Fatalf("llm_response_content=%q, want %q", gotTrace.LLMResponseContent, llmContent)
+	}
 
 	firstPage, err := store.QueryTraces(context.Background(), TraceFilter{
 		Provider: "openai",
@@ -434,6 +463,16 @@ func TestSQLiteStoreGetTraceAndQueryTraces(t *testing.T) {
 	}
 	if secondPage.NextCursor != "" {
 		t.Fatalf("second page next cursor=%q, want empty", secondPage.NextCursor)
+	}
+	summaryPage, err := store.QueryTraces(context.Background(), TraceFilter{
+		Provider: "anthropic",
+		Limit:    1,
+	})
+	if err != nil {
+		t.Fatalf("QueryTraces(summary page) error: %v", err)
+	}
+	if len(summaryPage.Items) != 1 || summaryPage.Items[0].LLMResponseContent != "" {
+		t.Fatalf("summary llm_response_content=%q, want empty", summaryPage.Items[0].LLMResponseContent)
 	}
 
 	tokenFilter, err := store.QueryTraces(context.Background(), TraceFilter{

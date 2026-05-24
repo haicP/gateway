@@ -93,6 +93,11 @@ func writeDebugText(out io.Writer, document debugDocument, includeHeaders bool, 
 			if strings.TrimSpace(checkpoint.ResponseBody) != "" {
 				fmt.Fprintf(out, "response_body: %s\n", checkpoint.ResponseBody)
 			}
+			if checkpoint.LLMResponseContent != nil {
+				if encoded, err := json.Marshal(checkpoint.LLMResponseContent); err == nil {
+					fmt.Fprintf(out, "llm_response_content: %s\n", string(encoded))
+				}
+			}
 		}
 	}
 

@@ -54,6 +54,7 @@ type traceDetail struct {
 	ResponseStatus     int           `json:"response_status"`
 	ResponseHeaders    any           `json:"response_headers,omitempty"`
 	ResponseBody       string        `json:"response_body,omitempty"`
+	LLMResponseContent any           `json:"llm_response_content,omitempty"`
 	InputTokens        int           `json:"input_tokens"`
 	OutputTokens       int           `json:"output_tokens"`
 	TotalTokens        int           `json:"total_tokens"`
@@ -307,6 +308,7 @@ func detailTrace(item *trace.Trace) traceDetail {
 		ResponseStatus:     item.ResponseStatus,
 		ResponseHeaders:    decodeJSONField(item.ResponseHeaders),
 		ResponseBody:       item.ResponseBody,
+		LLMResponseContent: decodeJSONField(item.LLMResponseContent),
 		InputTokens:        item.InputTokens,
 		OutputTokens:       item.OutputTokens,
 		TotalTokens:        item.TotalTokens,

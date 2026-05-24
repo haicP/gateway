@@ -133,6 +133,7 @@ func writePostgresTraceRow(ctx context.Context, execer postgresExecer, row *Trac
     response_status,
     response_headers,
     response_body,
+    llm_response_content,
     input_tokens,
     output_tokens,
 	    total_tokens,
@@ -159,7 +160,7 @@ func writePostgresTraceRow(ctx context.Context, execer postgresExecer, row *Trac
     $12,
     NULLIF($13, '')::jsonb,
     $14,
-    $15,
+    NULLIF($15, '')::jsonb,
     $16,
 	    $17,
 	    $18,
@@ -168,8 +169,9 @@ func writePostgresTraceRow(ctx context.Context, execer postgresExecer, row *Trac
 	    $21,
 	    $22,
 	    $23,
-	    NULLIF($24, '')::jsonb,
-	    $25
+	    $24,
+	    NULLIF($25, '')::jsonb,
+	    $26
 	)`,
 		mainRow.ID,
 		nullIfEmpty(mainRow.TraceGroupID),
@@ -185,6 +187,7 @@ func writePostgresTraceRow(ctx context.Context, execer postgresExecer, row *Trac
 		mainRow.ResponseStatus,
 		mainRow.ResponseHeaders,
 		mainRow.ResponseBody,
+		mainRow.LLMResponseContent,
 		mainRow.InputTokens,
 		mainRow.OutputTokens,
 		mainRow.TotalTokens,
@@ -408,6 +411,7 @@ INSERT INTO traces (
     response_status,
     response_headers,
     response_body,
+    llm_response_content,
     input_tokens,
     output_tokens,
     total_tokens,
@@ -434,7 +438,7 @@ INSERT INTO traces (
     $12,
     NULLIF($13, '')::jsonb,
     $14,
-    $15,
+    NULLIF($15, '')::jsonb,
     $16,
     $17,
     $18,
@@ -443,8 +447,9 @@ INSERT INTO traces (
     $21,
     $22,
     $23,
-    NULLIF($24, '')::jsonb,
-    $25
+    $24,
+    NULLIF($25, '')::jsonb,
+    $26
 )`)
 	if err != nil {
 		return fmt.Errorf("prepare postgres batch insert: %w", err)
@@ -469,6 +474,7 @@ INSERT INTO traces (
 			mainRow.ResponseStatus,
 			mainRow.ResponseHeaders,
 			mainRow.ResponseBody,
+			mainRow.LLMResponseContent,
 			mainRow.InputTokens,
 			mainRow.OutputTokens,
 			mainRow.TotalTokens,
@@ -510,6 +516,7 @@ COALESCE(request_body, ''),
 response_status,
 COALESCE(response_headers::text, ''),
 COALESCE(response_body, ''),
+COALESCE(llm_response_content::text, ''),
 input_tokens,
 output_tokens,
 total_tokens,
@@ -538,6 +545,7 @@ COALESCE(request_headers::text, ''),
 response_status,
 COALESCE(response_headers::text, ''),
 '' AS response_body,
+'' AS llm_response_content,
 input_tokens,
 output_tokens,
 total_tokens,
@@ -564,6 +572,28 @@ func (s *PostgresStore) GetTrace(ctx context.Context, id string) (*Trace, error)
 		return nil, fmt.Errorf("load trace body %q: %w", id, err)
 	}
 	return traceRow, nil
+}
+
+func (s *PostgresStore) UpdateLLMResponseContent(ctx context.Context, traceID, content string) error {
+	traceID = strings.TrimSpace(traceID)
+	if traceID == "" {
+		return nil
+	}
+	result, err := s.db.ExecContext(ctx, `
+UPDATE traces
+SET llm_response_content = NULLIF($2, '')::jsonb
+WHERE id = $1`, traceID, content)
+	if err != nil {
+		return fmt.Errorf("update llm response content %q: %w", traceID, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read llm response content update row count %q: %w", traceID, err)
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *PostgresStore) loadCompressedTraceBodies(ctx context.Context, item *Trace) error {
@@ -1255,6 +1285,7 @@ func scanPostgresTraceRow(scanner rowScanner) (*Trace, error) {
 		responseStatus     sql.NullInt64
 		responseHeaders    sql.NullString
 		responseBody       sql.NullString
+		llmResponseContent sql.NullString
 		inputTokens        sql.NullInt64
 		outputTokens       sql.NullInt64
 		totalTokens        sql.NullInt64
@@ -1283,6 +1314,7 @@ func scanPostgresTraceRow(scanner rowScanner) (*Trace, error) {
 		&responseStatus,
 		&responseHeaders,
 		&responseBody,
+		&llmResponseContent,
 		&inputTokens,
 		&outputTokens,
 		&totalTokens,
@@ -1324,6 +1356,9 @@ func scanPostgresTraceRow(scanner rowScanner) (*Trace, error) {
 	}
 	if responseBody.Valid {
 		item.ResponseBody = responseBody.String
+	}
+	if llmResponseContent.Valid {
+		item.LLMResponseContent = llmResponseContent.String
 	}
 	if inputTokens.Valid {
 		item.InputTokens = int(inputTokens.Int64)
@@ -1387,6 +1422,7 @@ func scanPostgresTraceExportRow(scanner rowScanner) (*Trace, error) {
 		responseStatus     sql.NullInt64
 		responseHeaders    sql.NullString
 		responseBody       sql.NullString
+		llmResponseContent sql.NullString
 		inputTokens        sql.NullInt64
 		outputTokens       sql.NullInt64
 		totalTokens        sql.NullInt64
@@ -1417,6 +1453,7 @@ func scanPostgresTraceExportRow(scanner rowScanner) (*Trace, error) {
 		&responseStatus,
 		&responseHeaders,
 		&responseBody,
+		&llmResponseContent,
 		&inputTokens,
 		&outputTokens,
 		&totalTokens,
@@ -1460,6 +1497,9 @@ func scanPostgresTraceExportRow(scanner rowScanner) (*Trace, error) {
 	}
 	if responseBody.Valid {
 		item.ResponseBody = responseBody.String
+	}
+	if llmResponseContent.Valid {
+		item.LLMResponseContent = llmResponseContent.String
 	}
 	if inputTokens.Valid {
 		item.InputTokens = int(inputTokens.Int64)
@@ -1563,6 +1603,7 @@ func (s *PostgresStore) ensureOptionalColumns() error {
 		`ALTER TABLE traces ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT 'default';`,
 		`ALTER TABLE traces ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';`,
 		`ALTER TABLE traces ADD COLUMN IF NOT EXISTS gateway_key_id TEXT;`,
+		`ALTER TABLE traces ADD COLUMN IF NOT EXISTS llm_response_content JSONB;`,
 		`UPDATE traces SET gateway_key_id = NULLIF(metadata ->> 'gateway_key_id', '') WHERE gateway_key_id IS NULL;`,
 		`CREATE INDEX IF NOT EXISTS idx_traces_org_workspace_created_at_id ON traces(org_id, workspace_id, created_at DESC, id DESC);`,
 		`CREATE INDEX IF NOT EXISTS idx_traces_org_workspace_timestamp ON traces(org_id, workspace_id, timestamp);`,

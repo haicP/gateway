@@ -70,6 +70,9 @@ type WriterMetrics struct {
 	// OnWriteSuccess is called after traces are successfully persisted to storage.
 	// The count parameter indicates how many traces were written.
 	OnWriteSuccess func(count int)
+	// OnWriteSuccessIDs is called after traces are successfully persisted to storage.
+	// The slice is a fresh copy and only contains non-empty trace IDs.
+	OnWriteSuccessIDs func(ids []string)
 }
 
 type Writer struct {
@@ -465,9 +468,7 @@ func (w *Writer) flushBatch(ctx context.Context, batch []*Trace) {
 				Err:         err,
 			})
 		} else {
-			if m := w.loadMetrics(); m != nil && m.OnWriteSuccess != nil {
-				m.OnWriteSuccess(1)
-			}
+			w.notifyWriteSuccess(batch[:1])
 		}
 		return
 	}
@@ -475,12 +476,15 @@ func (w *Writer) flushBatch(ctx context.Context, batch []*Trace) {
 		// Fallback to per-item writes so a batch-level failure does not drop all traces.
 		failedWrites := 0
 		var fallbackErr error
+		succeededTraces := make([]*Trace, 0, len(batch))
 		for _, trace := range batch {
 			if traceErr := w.store.WriteTrace(ctx, trace); traceErr != nil {
 				failedWrites++
 				if fallbackErr == nil {
 					fallbackErr = traceErr
 				}
+			} else {
+				succeededTraces = append(succeededTraces, trace)
 			}
 		}
 		if failedWrites > 0 {
@@ -491,14 +495,35 @@ func (w *Writer) flushBatch(ctx context.Context, batch []*Trace) {
 				Err:         errors.Join(err, fallbackErr),
 			})
 		}
-		if succeeded := len(batch) - failedWrites; succeeded > 0 {
-			if m := w.loadMetrics(); m != nil && m.OnWriteSuccess != nil {
-				m.OnWriteSuccess(succeeded)
-			}
+		if len(succeededTraces) > 0 {
+			w.notifyWriteSuccess(succeededTraces)
 		}
 	} else {
-		if m := w.loadMetrics(); m != nil && m.OnWriteSuccess != nil {
-			m.OnWriteSuccess(len(batch))
+		w.notifyWriteSuccess(batch)
+	}
+}
+
+func (w *Writer) notifyWriteSuccess(traces []*Trace) {
+	if len(traces) == 0 {
+		return
+	}
+	m := w.loadMetrics()
+	if m == nil {
+		return
+	}
+	if m.OnWriteSuccess != nil {
+		m.OnWriteSuccess(len(traces))
+	}
+	if m.OnWriteSuccessIDs != nil {
+		ids := make([]string, 0, len(traces))
+		for _, item := range traces {
+			if item == nil || item.ID == "" {
+				continue
+			}
+			ids = append(ids, item.ID)
+		}
+		if len(ids) > 0 {
+			m.OnWriteSuccessIDs(ids)
 		}
 	}
 }

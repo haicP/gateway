@@ -184,6 +184,8 @@ Validation rules:
 - `request_body`
 - `response_headers`
 - `response_body`
+- `llm_response_content` (structured semantic LLM output; populated
+  asynchronously when response body capture and privacy policy allow it)
 - `metadata`
 
 `GET /api/traces/:id/replay` query parameters:

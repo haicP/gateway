@@ -25,6 +25,11 @@ type TraceStore interface {
 	GetErrorRateBreakdown(ctx context.Context, filter AnalyticsFilter, groupBy string) ([]ErrorRateStats, error)
 }
 
+// LLMResponseContentUpdater updates asynchronously derived semantic LLM output.
+type LLMResponseContentUpdater interface {
+	UpdateLLMResponseContent(ctx context.Context, traceID, content string) error
+}
+
 // TraceExporter streams trace records in stable timestamp order for backups or
 // external archival jobs.
 type TraceExporter interface {

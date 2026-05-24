@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -392,6 +393,7 @@ func toDebugTraceCheckpoint(item *trace.Trace, step int, includeHeaders bool, in
 	if includeBodies {
 		checkpoint.RequestBody = item.RequestBody
 		checkpoint.ResponseBody = item.ResponseBody
+		checkpoint.LLMResponseContent = decodeDebugJSONField(item.LLMResponseContent)
 	}
 	return checkpoint
 }
@@ -443,4 +445,16 @@ func decodeDebugMetadataMap(raw string) map[string]any {
 		return map[string]any{"raw": raw}
 	}
 	return nil
+}
+
+func decodeDebugJSONField(raw string) any {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return nil
+	}
+	var decoded any
+	if err := json.Unmarshal([]byte(value), &decoded); err != nil {
+		return value
+	}
+	return decoded
 }

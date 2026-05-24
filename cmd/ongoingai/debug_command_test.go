@@ -84,6 +84,30 @@ func TestRunDebugByTraceIDJSON(t *testing.T) {
 	if payload.Chain.Checkpoints[1].ID != "trace-step-2" {
 		t.Fatalf("second checkpoint=%q, want trace-step-2", payload.Chain.Checkpoints[1].ID)
 	}
+	if payload.Chain.Checkpoints[0].LLMResponseContent != nil {
+		t.Fatalf("llm_response_content=%v, want omitted without include bodies", payload.Chain.Checkpoints[0].LLMResponseContent)
+	}
+}
+
+func TestRunDebugIncludesLLMResponseContentWithBodies(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeDebugTestFixture(t, true)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runDebug([]string{"--config", configPath, "--trace-id", "trace-step-1", "--format", "json", "--limit", "10", "--include-bodies"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("runDebug() code=%d, stderr=%q", code, stderr.String())
+	}
+
+	var payload debugDocument
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("decode debug json: %v\nbody=%s", err, stdout.String())
+	}
+	if payload.Chain.Checkpoints[0].LLMResponseContent == nil {
+		t.Fatal("expected llm_response_content when include bodies is set")
+	}
 }
 
 func TestRunDebugByTraceGroupIDJSON(t *testing.T) {
@@ -441,21 +465,23 @@ func writeDebugTestFixture(t *testing.T, seedTraces bool) string {
 				Metadata:         `{"lineage_group_id":"group-other","lineage_thread_id":"thread-other","lineage_run_id":"run-other","lineage_checkpoint_id":"trace-unrelated","lineage_checkpoint_seq":1,"lineage_immutable":true}`,
 			},
 			{
-				ID:               "trace-step-1",
-				Timestamp:        base,
-				CreatedAt:        base,
-				TraceGroupID:     "group-demo",
-				Provider:         "openai",
-				Model:            "gpt-4o-mini",
-				RequestMethod:    "POST",
-				RequestPath:      "/openai/v1/chat/completions",
-				ResponseStatus:   200,
-				InputTokens:      11,
-				OutputTokens:     7,
-				TotalTokens:      18,
-				LatencyMS:        120,
-				EstimatedCostUSD: 0.00018,
-				Metadata:         `{"lineage_group_id":"group-demo","lineage_thread_id":"thread-demo","lineage_run_id":"run-demo","lineage_checkpoint_id":"trace-step-1","lineage_checkpoint_seq":1,"lineage_immutable":true}`,
+				ID:                 "trace-step-1",
+				Timestamp:          base,
+				CreatedAt:          base,
+				TraceGroupID:       "group-demo",
+				Provider:           "openai",
+				Model:              "gpt-4o-mini",
+				RequestMethod:      "POST",
+				RequestPath:        "/openai/v1/chat/completions",
+				ResponseStatus:     200,
+				InputTokens:        11,
+				OutputTokens:       7,
+				TotalTokens:        18,
+				LatencyMS:          120,
+				EstimatedCostUSD:   0.00018,
+				ResponseBody:       `{"id":"chatcmpl-1"}`,
+				LLMResponseContent: `{"schema_version":"llm_response_content.v1","parts":[{"type":"text","text":"debug"}]}`,
+				Metadata:           `{"lineage_group_id":"group-demo","lineage_thread_id":"thread-demo","lineage_run_id":"run-demo","lineage_checkpoint_id":"trace-step-1","lineage_checkpoint_seq":1,"lineage_immutable":true}`,
 			},
 			{
 				ID:               "trace-step-2",

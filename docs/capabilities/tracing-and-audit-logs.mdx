@@ -115,6 +115,9 @@ You should see:
 - Token and cost aggregates in analytics summary.
 - Streaming traces with `time_to_first_token_ms` and `stream_chunks` metadata
   when streaming endpoints are used.
+- Trace detail responses may include `llm_response_content`, a structured JSON
+  view of semantic model output. It is populated after the trace write and may
+  be briefly absent immediately after a request completes.
 
 ## Troubleshooting
 
@@ -138,6 +141,16 @@ You should see:
 - Symptom: `request_body` and `response_body` are empty in trace detail.
 - Cause: `tracing.capture_bodies=false`, or redaction dropped body persistence.
 - Fix: Enable body capture when needed and confirm privacy settings.
+
+### `llm_response_content` is empty
+
+- Symptom: Trace detail has no structured LLM output.
+- Cause: The field is asynchronously derived from stored response bodies, so it
+  can be briefly absent. It also stays empty when body capture is disabled,
+  response body persistence is dropped by redaction, or large body redaction is
+  skipped.
+- Fix: Retry the detail read after a short delay and confirm response body
+  capture/privacy settings.
 
 ### Audit events are missing in logs
 

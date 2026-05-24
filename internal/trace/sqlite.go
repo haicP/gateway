@@ -95,6 +95,7 @@ func (s *SQLiteStore) WriteTrace(ctx context.Context, trace *Trace) error {
     response_status,
     response_headers,
     response_body,
+    llm_response_content,
     input_tokens,
     output_tokens,
     total_tokens,
@@ -106,7 +107,7 @@ func (s *SQLiteStore) WriteTrace(ctx context.Context, trace *Trace) error {
 	    estimated_cost_usd,
 	    metadata,
 	    created_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			row.ID,
 			row.TraceGroupID,
 			row.OrgID,
@@ -121,6 +122,7 @@ func (s *SQLiteStore) WriteTrace(ctx context.Context, trace *Trace) error {
 			row.ResponseStatus,
 			row.ResponseHeaders,
 			row.ResponseBody,
+			row.LLMResponseContent,
 			row.InputTokens,
 			row.OutputTokens,
 			row.TotalTokens,
@@ -175,6 +177,7 @@ INSERT INTO traces (
     response_status,
     response_headers,
     response_body,
+    llm_response_content,
     input_tokens,
     output_tokens,
     total_tokens,
@@ -186,7 +189,7 @@ INSERT INTO traces (
 	    estimated_cost_usd,
 	    metadata,
 	    created_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 		if err != nil {
 			return fmt.Errorf("prepare sqlite batch insert: %w", err)
 		}
@@ -213,6 +216,7 @@ INSERT INTO traces (
 				row.ResponseStatus,
 				row.ResponseHeaders,
 				row.ResponseBody,
+				row.LLMResponseContent,
 				row.InputTokens,
 				row.OutputTokens,
 				row.TotalTokens,
@@ -322,6 +326,7 @@ request_body,
 response_status,
 response_headers,
 response_body,
+llm_response_content,
 input_tokens,
 output_tokens,
 total_tokens,
@@ -349,6 +354,7 @@ request_headers,
 response_status,
 response_headers,
 '' AS response_body,
+'' AS llm_response_content,
 input_tokens,
 output_tokens,
 total_tokens,
@@ -371,6 +377,38 @@ func (s *SQLiteStore) GetTrace(ctx context.Context, id string) (*Trace, error) {
 		return nil, fmt.Errorf("get trace %q: %w", id, err)
 	}
 	return traceRow, nil
+}
+
+func (s *SQLiteStore) UpdateLLMResponseContent(ctx context.Context, traceID, content string) error {
+	traceID = strings.TrimSpace(traceID)
+	if traceID == "" {
+		return nil
+	}
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	err := retrySQLiteBusy(ctx, func() error {
+		result, err := s.db.ExecContext(ctx, `
+UPDATE traces
+SET llm_response_content = ?
+WHERE id = ?`, content, traceID)
+		if err != nil {
+			return err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("update llm response content %q: %w", traceID, err)
+	}
+	return nil
 }
 
 func (s *SQLiteStore) QueryTraces(ctx context.Context, filter TraceFilter) (*TraceResult, error) {
@@ -1111,6 +1149,7 @@ func scanTraceRow(scanner rowScanner) (*Trace, error) {
 		responseStatus     sql.NullInt64
 		responseHeaders    sql.NullString
 		responseBody       sql.NullString
+		llmResponseContent sql.NullString
 		inputTokens        sql.NullInt64
 		outputTokens       sql.NullInt64
 		totalTokens        sql.NullInt64
@@ -1138,6 +1177,7 @@ func scanTraceRow(scanner rowScanner) (*Trace, error) {
 		&responseStatus,
 		&responseHeaders,
 		&responseBody,
+		&llmResponseContent,
 		&inputTokens,
 		&outputTokens,
 		&totalTokens,
@@ -1184,6 +1224,9 @@ func scanTraceRow(scanner rowScanner) (*Trace, error) {
 	}
 	if responseBody.Valid {
 		item.ResponseBody = responseBody.String
+	}
+	if llmResponseContent.Valid {
+		item.LLMResponseContent = llmResponseContent.String
 	}
 	if inputTokens.Valid {
 		item.InputTokens = int(inputTokens.Int64)

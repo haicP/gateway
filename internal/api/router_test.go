@@ -291,6 +291,7 @@ func TestRouterServesTracesListAndDetail(t *testing.T) {
 				ResponseStatus:     200,
 				ResponseHeaders:    `{"Content-Type":["application/json"]}`,
 				ResponseBody:       `{"id":"chatcmpl-1"}`,
+				LLMResponseContent: `{"schema_version":"llm_response_content.v1","parts":[{"type":"text","text":"hello"}]}`,
 				InputTokens:        10,
 				OutputTokens:       20,
 				TotalTokens:        30,
@@ -377,6 +378,9 @@ func TestRouterServesTracesListAndDetail(t *testing.T) {
 	if listBody["next_cursor"] != "next-cursor" {
 		t.Fatalf("next_cursor=%v, want next-cursor", listBody["next_cursor"])
 	}
+	if _, ok := first["llm_response_content"]; ok {
+		t.Fatalf("list item unexpectedly included llm_response_content: %v", first)
+	}
 
 	detailReq := httptest.NewRequest(http.MethodGet, "/api/traces/trace-1", nil)
 	detailReq = detailReq.WithContext(auth.WithIdentity(detailReq.Context(), &auth.Identity{
@@ -416,6 +420,14 @@ func TestRouterServesTracesListAndDetail(t *testing.T) {
 	if _, ok := detailBody["request_headers"].(map[string]any); !ok {
 		t.Fatalf("request_headers type=%T, want object", detailBody["request_headers"])
 	}
+	content, ok := detailBody["llm_response_content"].(map[string]any)
+	if !ok {
+		t.Fatalf("llm_response_content type=%T, want object", detailBody["llm_response_content"])
+	}
+	parts, ok := content["parts"].([]any)
+	if !ok || len(parts) != 1 {
+		t.Fatalf("llm_response_content parts=%v", content["parts"])
+	}
 
 	deniedReq := httptest.NewRequest(http.MethodGet, "/api/traces/trace-1", nil)
 	deniedReq = deniedReq.WithContext(auth.WithIdentity(deniedReq.Context(), &auth.Identity{
@@ -436,20 +448,21 @@ func TestRouterTraceReplayReturnsCheckpointHistory(t *testing.T) {
 	store := &stubStore{
 		getByID: map[string]*trace.Trace{
 			"trace-2": {
-				ID:             "trace-2",
-				TraceGroupID:   "group-1",
-				OrgID:          "org-a",
-				WorkspaceID:    "workspace-a",
-				Timestamp:      base.Add(2 * time.Minute),
-				Provider:       "openai",
-				Model:          "gpt-4o-mini",
-				RequestMethod:  "POST",
-				RequestPath:    "/openai/v1/chat/completions",
-				ResponseStatus: 200,
-				TotalTokens:    30,
-				LatencyMS:      120,
-				Metadata:       `{"lineage_group_id":"group-1","lineage_thread_id":"thread-1","lineage_run_id":"run-1","lineage_checkpoint_id":"trace-2","lineage_checkpoint_seq":2,"lineage_immutable":true}`,
-				CreatedAt:      base.Add(2 * time.Minute),
+				ID:                 "trace-2",
+				TraceGroupID:       "group-1",
+				OrgID:              "org-a",
+				WorkspaceID:        "workspace-a",
+				Timestamp:          base.Add(2 * time.Minute),
+				Provider:           "openai",
+				Model:              "gpt-4o-mini",
+				RequestMethod:      "POST",
+				RequestPath:        "/openai/v1/chat/completions",
+				ResponseStatus:     200,
+				TotalTokens:        30,
+				LatencyMS:          120,
+				LLMResponseContent: `{"schema_version":"llm_response_content.v1","parts":[{"type":"text","text":"replay"}]}`,
+				Metadata:           `{"lineage_group_id":"group-1","lineage_thread_id":"thread-1","lineage_run_id":"run-1","lineage_checkpoint_id":"trace-2","lineage_checkpoint_seq":2,"lineage_immutable":true}`,
+				CreatedAt:          base.Add(2 * time.Minute),
 			},
 		},
 		queryResult: &trace.TraceResult{
@@ -532,6 +545,9 @@ func TestRouterTraceReplayReturnsCheckpointHistory(t *testing.T) {
 	target, ok := body["target_trace"].(map[string]any)
 	if !ok || target["id"] != "trace-2" {
 		t.Fatalf("target_trace=%v, want trace-2 detail", body["target_trace"])
+	}
+	if _, ok := target["llm_response_content"].(map[string]any); !ok {
+		t.Fatalf("target llm_response_content=%v, want object", target["llm_response_content"])
 	}
 }
 

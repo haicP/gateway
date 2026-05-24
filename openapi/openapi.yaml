@@ -630,6 +630,10 @@ components:
               additionalProperties: true
             response_body:
               type: string
+            llm_response_content:
+              type: object
+              additionalProperties: true
+              description: Structured semantic LLM output derived asynchronously from the persisted response body.
             lineage:
               $ref: '#/components/schemas/TraceLineage'
             metadata:

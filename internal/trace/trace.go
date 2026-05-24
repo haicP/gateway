@@ -24,6 +24,7 @@ type Trace struct {
 	ResponseStatus        int
 	ResponseHeaders       string
 	ResponseBody          string
+	LLMResponseContent    string
 	ResponseBodyPath      string
 	ResponseBodyBytes     int64
 	ResponseBodySHA256    string

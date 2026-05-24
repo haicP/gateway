@@ -69,6 +69,7 @@ type debugTraceCheckpoint struct {
 	ResponseHeaders    string         `json:"response_headers,omitempty"`
 	RequestBody        string         `json:"request_body,omitempty"`
 	ResponseBody       string         `json:"response_body,omitempty"`
+	LLMResponseContent any            `json:"llm_response_content,omitempty"`
 }
 
 type debugLineage struct {

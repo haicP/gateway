@@ -29,6 +29,8 @@ Trace records can include:
 - Model, token, and estimated cost fields when provider responses include usage
   data.
 - Streaming metadata such as chunk count and time to first token.
+- Structured `llm_response_content` derived asynchronously from stored response
+  bodies when body capture and privacy policy allow it.
 - Tenant attribution such as `org_id`, `workspace_id`, and `gateway_key_id`
   when auth scope is available.
 - Provider key attribution as a hash identifier (`api_key_hash`), not raw key

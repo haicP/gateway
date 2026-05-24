@@ -398,7 +398,17 @@ func runServe(args []string) int {
 		fmt.Fprintf(os.Stderr, "unsupported storage.driver %q\n", cfg.Storage.Driver)
 		return 1
 	}
-	attachTraceWriterMetrics(traceWriter, otelRuntime)
+	llmResponseContentEnricher := newLLMResponseContentEnricher(
+		traceStore,
+		logger,
+		llmResponseContentEnrichBufferSize,
+		llmResponseContentEnrichTimeout,
+	)
+	if llmResponseContentEnricher != nil {
+		llmResponseContentEnricher.Start(context.Background())
+		defer shutdownLLMResponseContentEnricher(logger, llmResponseContentEnricher, llmResponseContentShutdownTimeout)
+	}
+	attachTraceWriterMetrics(traceWriter, otelRuntime, llmResponseContentEnricher)
 	attachTraceWriterFailureLogging(logger, traceWriter, func(failure trace.WriteFailure) {
 		if otelRuntime != nil {
 			otelRuntime.RecordTraceWriteFailure(failure.Operation, failure.FailedCount, failure.ErrorClass, cfg.Storage.Driver)
@@ -1130,30 +1140,38 @@ func shutdownRequestDetailsBackupScheduler(logger *slog.Logger, scheduler reques
 	}
 }
 
-func attachTraceWriterMetrics(writer asyncTraceWriter, otelRuntime *observability.Runtime) {
-	if writer == nil || otelRuntime == nil || !otelRuntime.Enabled() {
+func attachTraceWriterMetrics(writer asyncTraceWriter, otelRuntime *observability.Runtime, enricher *llmResponseContentEnricher) {
+	if writer == nil {
 		return
 	}
 
-	if qlp, ok := writer.(traceWriterQueueLenProvider); ok {
-		otelRuntime.RegisterTraceQueueDepthGauge(qlp.QueueLen)
-	}
-	if qcp, ok := writer.(traceWriterQueueCapProvider); ok {
-		otelRuntime.RegisterTraceQueueCapacityGauge(qcp.QueueCap)
+	otelEnabled := otelRuntime != nil && otelRuntime.Enabled()
+	if otelEnabled {
+		if qlp, ok := writer.(traceWriterQueueLenProvider); ok {
+			otelRuntime.RegisterTraceQueueDepthGauge(qlp.QueueLen)
+		}
+		if qcp, ok := writer.(traceWriterQueueCapProvider); ok {
+			otelRuntime.RegisterTraceQueueCapacityGauge(qcp.QueueCap)
+		}
 	}
 
 	ms, ok := writer.(traceWriterMetricsSetter)
 	if !ok {
 		return
 	}
-	ms.SetMetrics(&trace.WriterMetrics{
-		OnEnqueue:      otelRuntime.RecordTraceEnqueued,
-		OnFlush:        otelRuntime.RecordTraceFlush,
-		OnWriteStart:   otelRuntime.MakeWriteSpanHook(),
-		OnWriteSuccess: otelRuntime.RecordTraceWritten,
+	metrics := &trace.WriterMetrics{}
+	if otelEnabled {
+		metrics.OnEnqueue = otelRuntime.RecordTraceEnqueued
+		metrics.OnFlush = otelRuntime.RecordTraceFlush
+		metrics.OnWriteStart = otelRuntime.MakeWriteSpanHook()
+		metrics.OnWriteSuccess = otelRuntime.RecordTraceWritten
 		// OnDrop left nil: the captureSink already calls RecordTraceQueueDrop
 		// with richer route/status attributes.
-	})
+	}
+	if enricher != nil {
+		metrics.OnWriteSuccessIDs = enricher.EnqueueTraceIDs
+	}
+	ms.SetMetrics(metrics)
 }
 
 func attachTraceWriterFailureLogging(logger *slog.Logger, writer asyncTraceWriter, onFailure func(trace.WriteFailure)) {

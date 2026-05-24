@@ -818,6 +818,44 @@ func TestWriterMetricsOnWriteSuccessCalledOnSuccess(t *testing.T) {
 	}
 }
 
+func TestWriterMetricsOnWriteSuccessIDsOnlyIncludesSuccessfulWrites(t *testing.T) {
+	t.Parallel()
+
+	store := &flakyStore{failFirst: 1}
+	writer := NewWriter(store, 8)
+
+	var (
+		mu  sync.Mutex
+		ids []string
+	)
+	writer.SetMetrics(&WriterMetrics{
+		OnWriteSuccessIDs: func(next []string) {
+			mu.Lock()
+			defer mu.Unlock()
+			ids = append(ids, next...)
+		},
+	})
+
+	writer.Start(context.Background())
+	for _, id := range []string{"trace-1", "trace-2", "trace-3"} {
+		if !writer.Enqueue(&Trace{ID: id}) {
+			t.Fatalf("enqueue failed for %s", id)
+		}
+	}
+	writer.Stop()
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, id := range ids {
+		if id == "trace-1" {
+			t.Fatalf("failed trace id was reported as successful: %v", ids)
+		}
+	}
+	if len(ids) == 0 || len(ids) > 2 {
+		t.Fatalf("success ids=%v, want 1-2 successful fallback ids", ids)
+	}
+}
+
 func TestWriterMetricsOnWriteSuccessNotCalledOnFailure(t *testing.T) {
 	t.Parallel()
 
