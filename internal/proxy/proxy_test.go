@@ -123,6 +123,40 @@ func TestHandlerProxiesAndStripsPrefix(t *testing.T) {
 	}
 }
 
+func TestHandlerStripsConfiguredPrefix(t *testing.T) {
+	t.Parallel()
+
+	var gotPath string
+	var gotQuery string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler, err := NewHandler([]Route{
+		{Prefix: "/myllm", Upstream: upstream.URL},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), http.NotFoundHandler())
+	if err != nil {
+		t.Fatalf("NewHandler error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/myllm/v1/chat/completions?stream=true", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code %d, want %d", rec.Code, http.StatusOK)
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Fatalf("upstream path %q, want %q", gotPath, "/v1/chat/completions")
+	}
+	if gotQuery != "stream=true" {
+		t.Fatalf("upstream query %q, want %q", gotQuery, "stream=true")
+	}
+}
+
 func TestHandlerProxiesLLMCompatibilityPaths(t *testing.T) {
 	t.Parallel()
 

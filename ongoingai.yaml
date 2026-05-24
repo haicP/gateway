@@ -17,11 +17,11 @@ storage:
 # 上游模型服务路由。匹配前缀的请求会剥离该前缀后转发到上游。
 providers:
   # 逻辑服务名，会出现在追踪记录、指标、认证审计事件和个人敏感信息规则范围中。
-  llm:
-    # 上游基础地址。请求转发前会先去掉 /llm 前缀。
-    upstream: http://192.168.68.55:3000
-    # 对外暴露的网关前缀。例如 /llm/v1/chat/completions 会转发为上游 /v1/chat/completions。
-    prefix: /llm
+  myllm:
+    # 上游基础地址。请求转发前会先去掉下面配置的 prefix。
+    upstream: http://192.168.68.168:8080
+    # 对外暴露的网关前缀。例如 /myllm/v1/chat/completions 会转发为上游 /v1/chat/completions。
+    prefix: /llmgateway
 
 # 追踪记录中的请求/响应内容采集配置。
 tracing:
@@ -38,7 +38,7 @@ backup:
     # 生成每日备份窗口时使用的 IANA 时区，例如 UTC 或 Asia/Shanghai。
     timezone: Asia/Shanghai
     # 每日启动时间，24 小时制 HH:MM。
-    daily_at: "12:58"
+    daily_at: "02:00"
     # 本地临时分片目录；Docker 部署时建议挂载到宿主机。
     temp_dir: ./data/backup-tmp
     # 从追踪存储分页读取请求详情时的每页记录数。
