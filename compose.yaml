@@ -1,0 +1,17 @@
+services:
+  llmgateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+        COMMIT: ${COMMIT:-none}
+        DATE: ${DATE:-unknown}
+    image: llmgateway:llm-route-test
+    container_name: llmgateway-running
+    ports:
+      - "18080:8080"
+    volumes:
+      - ./ongoingai.yaml:/app/ongoingai.yaml:ro
+      - ./data:/app/data
+    restart: unless-stopped
