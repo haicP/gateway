@@ -18,12 +18,19 @@ This project uses GitHub Actions workflows for CI, tagging, and release publishi
   - `base_version=1.1` -> `v1.1.0`, `v1.1.1`, `v1.1.2`, ...
   - `base_version=1.2` -> `v1.2.0`, `v1.2.1`, ...
 
+### `.github/workflows/docker-image.yml`
+
+- Runs after successful CI for pushes to `main`, and supports manual dispatch.
+- Builds and pushes multi-arch Docker images (`linux/amd64`, `linux/arm64`) to GHCR.
+- Publishes the moving `self` tag for the most recent `main` image.
+- Also publishes an immutable `sha-<short-sha>` tag for traceability.
+
 ### `.github/workflows/release.yml`
 
 - Runs on version tags (`v*`).
 - Builds cross-platform binaries and generates `dist/checksums.txt`.
 - Publishes release artifacts to GitHub Releases.
-- Builds and pushes multi-arch Docker images (`linux/amd64`, `linux/arm64`) to GHCR with `latest`, `major.minor`, and full version tags.
+- Builds and pushes multi-arch Docker images (`linux/amd64`, `linux/arm64`) to GHCR with `self`, `latest`, `major.minor`, and full version tags.
 
 ## Version Stream Config
 

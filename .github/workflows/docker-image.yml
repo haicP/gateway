@@ -1,47 +1,50 @@
-name: Release
+name: Docker Image
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "v*"
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
 
 permissions:
-  contents: write
+  contents: read
   packages: write
 
+concurrency:
+  group: docker-image-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  release:
+  docker-image:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.event == 'push'
+      )
     runs-on: ubuntu-latest
+    env:
+      SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - name: Setup Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version-file: go.mod
+          ref: ${{ env.SOURCE_SHA }}
 
-      - name: Derive release metadata
+      - name: Derive Docker metadata
         id: vars
         shell: bash
         run: |
-          echo "version=${GITHUB_REF_NAME#v}" >> "${GITHUB_OUTPUT}"
+          short_sha="${SOURCE_SHA::12}"
           echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${GITHUB_OUTPUT}"
           echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "${GITHUB_OUTPUT}"
-
-      - name: Test
-        run: make test
-
-      - name: Build release binaries
-        shell: bash
-        run: make build-cross VERSION="${{ steps.vars.outputs.version }}"
-
-      - name: Generate checksums
-        run: |
-          cd dist
-          sha256sum ongoingai_* > checksums.txt
+          echo "source_sha=${SOURCE_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "short_sha=${short_sha}" >> "${GITHUB_OUTPUT}"
+          echo "version=self-${short_sha}" >> "${GITHUB_OUTPUT}"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
@@ -62,10 +65,8 @@ jobs:
         with:
           images: ${{ steps.vars.outputs.image }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
             type=raw,value=self
+            type=raw,value=sha-${{ steps.vars.outputs.short_sha }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
@@ -78,17 +79,5 @@ jobs:
           labels: ${{ steps.docker_meta.outputs.labels }}
           build-args: |
             VERSION=${{ steps.vars.outputs.version }}
-            COMMIT=${{ github.sha }}
+            COMMIT=${{ steps.vars.outputs.source_sha }}
             DATE=${{ steps.vars.outputs.date }}
-
-      - name: Publish GitHub release assets
-        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2
-        with:
-          generate_release_notes: true
-          files: |
-            dist/ongoingai_linux_amd64
-            dist/ongoingai_linux_arm64
-            dist/ongoingai_darwin_amd64
-            dist/ongoingai_darwin_arm64
-            dist/ongoingai_windows_amd64.exe
-            dist/checksums.txt
