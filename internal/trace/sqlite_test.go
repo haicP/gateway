@@ -495,6 +495,143 @@ func TestSQLiteStoreGetTraceAndQueryTraces(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreExportTracesOrdersPagesAndIncludesInlineBodies(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "export.db")
+	store, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error: %v", err)
+	}
+	defer store.Close()
+
+	base := time.Date(2026, 2, 12, 1, 0, 0, 0, time.UTC)
+	rows := []*Trace{
+		{
+			ID:           "trace-export-to",
+			OrgID:        "org-export",
+			WorkspaceID:  "workspace-export",
+			Timestamp:    base.Add(2 * time.Second),
+			Provider:     "openai",
+			Model:        "gpt-4o-mini",
+			RequestBody:  "excluded request",
+			ResponseBody: "excluded response",
+			CreatedAt:    base.Add(20 * time.Second),
+		},
+		{
+			ID:           "trace-export-b",
+			OrgID:        "org-export",
+			WorkspaceID:  "workspace-export",
+			Timestamp:    base,
+			Provider:     "openai",
+			Model:        "gpt-4o-mini",
+			RequestBody:  "inline request b",
+			ResponseBody: "inline response b",
+			CreatedAt:    base.Add(10 * time.Second),
+		},
+		{
+			ID:           "trace-export-a",
+			OrgID:        "org-export",
+			WorkspaceID:  "workspace-export",
+			Timestamp:    base,
+			Provider:     "openai",
+			Model:        "gpt-4o-mini",
+			RequestBody:  "inline request a",
+			ResponseBody: "inline response a",
+			CreatedAt:    base.Add(30 * time.Second),
+		},
+		{
+			ID:           "trace-export-c",
+			OrgID:        "org-export",
+			WorkspaceID:  "workspace-export",
+			Timestamp:    base.Add(time.Second),
+			Provider:     "openai",
+			Model:        "gpt-4o-mini",
+			RequestBody:  "inline request c",
+			ResponseBody: "inline response c",
+			CreatedAt:    base.Add(5 * time.Second),
+		},
+		{
+			ID:           "trace-export-before",
+			OrgID:        "org-export",
+			WorkspaceID:  "workspace-export",
+			Timestamp:    base.Add(-time.Second),
+			Provider:     "openai",
+			Model:        "gpt-4o-mini",
+			RequestBody:  "before request",
+			ResponseBody: "before response",
+			CreatedAt:    base.Add(40 * time.Second),
+		},
+		{
+			ID:           "trace-export-cross-tenant",
+			OrgID:        "org-other",
+			WorkspaceID:  "workspace-export",
+			Timestamp:    base,
+			Provider:     "openai",
+			Model:        "gpt-4o-mini",
+			RequestBody:  "cross request",
+			ResponseBody: "cross response",
+			CreatedAt:    base.Add(50 * time.Second),
+		},
+	}
+	for _, row := range rows {
+		if err := store.WriteTrace(context.Background(), row); err != nil {
+			t.Fatalf("WriteTrace(%s) error: %v", row.ID, err)
+		}
+	}
+
+	firstPage, err := store.ExportTraces(context.Background(), TraceExportFilter{
+		OrgID:       "org-export",
+		WorkspaceID: "workspace-export",
+		From:        base,
+		To:          base.Add(2 * time.Second),
+		Limit:       2,
+	})
+	if err != nil {
+		t.Fatalf("ExportTraces(first page) error: %v", err)
+	}
+	if len(firstPage.Items) != 2 {
+		t.Fatalf("first page items=%d, want 2", len(firstPage.Items))
+	}
+	if firstPage.Items[0].ID != "trace-export-a" || firstPage.Items[1].ID != "trace-export-b" {
+		t.Fatalf("first page order=%s,%s, want trace-export-a,trace-export-b", firstPage.Items[0].ID, firstPage.Items[1].ID)
+	}
+	if firstPage.Items[0].RequestBody != "inline request a" || firstPage.Items[0].ResponseBody != "inline response a" {
+		t.Fatalf("first page body=%q/%q", firstPage.Items[0].RequestBody, firstPage.Items[0].ResponseBody)
+	}
+	if firstPage.NextCursor == "" {
+		t.Fatal("first page next cursor should not be empty")
+	}
+
+	secondPage, err := store.ExportTraces(context.Background(), TraceExportFilter{
+		OrgID:       "org-export",
+		WorkspaceID: "workspace-export",
+		From:        base,
+		To:          base.Add(2 * time.Second),
+		Limit:       2,
+		Cursor:      firstPage.NextCursor,
+	})
+	if err != nil {
+		t.Fatalf("ExportTraces(second page) error: %v", err)
+	}
+	if len(secondPage.Items) != 1 || secondPage.Items[0].ID != "trace-export-c" {
+		t.Fatalf("second page returned unexpected items: %#v", secondPage.Items)
+	}
+	if secondPage.Items[0].RequestBody != "inline request c" || secondPage.Items[0].ResponseBody != "inline response c" {
+		t.Fatalf("second page body=%q/%q", secondPage.Items[0].RequestBody, secondPage.Items[0].ResponseBody)
+	}
+	if secondPage.NextCursor != "" {
+		t.Fatalf("second page next cursor=%q, want empty", secondPage.NextCursor)
+	}
+
+	_, err = store.ExportTraces(context.Background(), TraceExportFilter{
+		Cursor: "not-a-cursor",
+	})
+	if !errors.Is(err, ErrInvalidCursor) {
+		t.Fatalf("invalid cursor error=%v, want ErrInvalidCursor", err)
+	}
+}
+
 func TestSQLiteStoreAnalyticsQueries(t *testing.T) {
 	t.Parallel()
 

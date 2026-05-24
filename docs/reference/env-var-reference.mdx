@@ -45,6 +45,20 @@ If you set a variable to an empty string, gateway ignores it.
 | `OTEL_METRIC_EXPORT_INTERVAL` | int (`Atoi`) | `observability.otel.metric_export_interval_ms` | `OTEL_METRIC_EXPORT_INTERVAL=10000` |
 | `ONGOINGAI_PROMETHEUS_ENABLED` | bool (`ParseBool`) | `observability.otel.prometheus_enabled` | `ONGOINGAI_PROMETHEUS_ENABLED=true` |
 | `ONGOINGAI_PROMETHEUS_PATH` | string | `observability.otel.prometheus_path` | `ONGOINGAI_PROMETHEUS_PATH=/metrics` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_ENABLED` | bool (`ParseBool`) | `backup.request_details.enabled` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_ENABLED=true` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_TIMEZONE` | string | `backup.request_details.timezone` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_TIMEZONE=Asia/Shanghai` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_DAILY_AT` | string (`HH:MM`) | `backup.request_details.daily_at` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_DAILY_AT=02:00` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_TEMP_DIR` | string | `backup.request_details.temp_dir` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_TEMP_DIR=/var/lib/ongoingai-backup` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_PAGE_SIZE` | int (`Atoi`) | `backup.request_details.page_size` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_PAGE_SIZE=500` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_SHARD_MAX_BYTES` | int64 (`ParseInt`) | `backup.request_details.shard_max_bytes` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_SHARD_MAX_BYTES=209715200` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_RETRY_MAX_ATTEMPTS` | int (`Atoi`) | `backup.request_details.retry.max_attempts` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_RETRY_MAX_ATTEMPTS=5` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_RETRY_INITIAL_BACKOFF_MS` | int (`Atoi`) | `backup.request_details.retry.initial_backoff_ms` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_RETRY_INITIAL_BACKOFF_MS=1000` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_RETRY_MAX_BACKOFF_MS` | int (`Atoi`) | `backup.request_details.retry.max_backoff_ms` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_RETRY_MAX_BACKOFF_MS=30000` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_BUCKET` | string | `backup.request_details.s3.bucket` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_BUCKET=ongoingai-backups` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_PREFIX` | string | `backup.request_details.s3.prefix` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_PREFIX=request-details` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_REGION` | string | `backup.request_details.s3.region` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_REGION=us-east-1` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_ENDPOINT` | string | `backup.request_details.s3.endpoint` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_ENDPOINT=https://s3.example.com` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_FORCE_PATH_STYLE` | bool (`ParseBool`) | `backup.request_details.s3.force_path_style` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_FORCE_PATH_STYLE=true` |
 | `ONGOINGAI_PII_MODE` | string | `pii.mode` | `ONGOINGAI_PII_MODE=redact_storage` |
 | `ONGOINGAI_PII_POLICY_ID` | string | `pii.policy_id` | `ONGOINGAI_PII_POLICY_ID=default/v1` |
 | `ONGOINGAI_PII_HASH_SALT` | string | `pii.replacement.hash_salt` | `ONGOINGAI_PII_HASH_SALT=workspace-salt` |
@@ -75,8 +89,9 @@ The following config areas do not support env var overrides in this release:
 ## Type and validation behavior
 
 - `ONGOINGAI_PORT` and `ONGOINGAI_BODY_MAX_SIZE` must parse as integers.
-- `ONGOINGAI_CAPTURE_BODIES` and `ONGOINGAI_AUTH_ENABLED` must parse as booleans.
+- `ONGOINGAI_CAPTURE_BODIES`, `ONGOINGAI_AUTH_ENABLED`, and backup bool fields must parse as booleans.
 - OpenTelemetry bool fields (`OTEL_SDK_DISABLED`, `OTEL_EXPORTER_OTLP_INSECURE`) must parse as booleans.
+- Backup integer fields (`PAGE_SIZE`, `SHARD_MAX_BYTES`, and retry intervals) must parse as integers.
 - OpenTelemetry integer fields (`OTEL_EXPORTER_OTLP_TIMEOUT`, `OTEL_METRIC_EXPORT_INTERVAL`) must parse as integers.
 - OpenTelemetry sampling field (`OTEL_TRACES_SAMPLER_ARG`) must parse as float.
 - OpenTelemetry exporter selectors (`OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`) accept `otlp` or `none`.

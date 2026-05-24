@@ -666,6 +666,64 @@ func (s *PostgresStore) QueryTraces(ctx context.Context, filter TraceFilter) (*T
 	}, nil
 }
 
+func (s *PostgresStore) ExportTraces(ctx context.Context, filter TraceExportFilter) (*TraceExportResult, error) {
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	whereSQL, args, err := buildPostgresTraceExportWhere(filter)
+	if err != nil {
+		return nil, err
+	}
+	limitPlaceholder := fmt.Sprintf("$%d", len(args)+1)
+	args = append(args, limit+1)
+
+	query := `
+SELECT trace_export.*, b.request_body_gzip, b.response_body_gzip
+FROM (
+	SELECT ` + postgresTraceDetailSelectColumns + `
+	FROM traces
+	WHERE ` + whereSQL + `
+	ORDER BY timestamp ASC, id ASC
+	LIMIT ` + limitPlaceholder + `
+) AS trace_export
+LEFT JOIN trace_bodies b ON b.trace_id = trace_export.id
+ORDER BY trace_export.timestamp ASC, trace_export.id ASC`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("export traces: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]*Trace, 0, limit+1)
+	for rows.Next() {
+		row, err := scanPostgresTraceExportRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan trace export row: %w", err)
+		}
+		items = append(items, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate trace export rows: %w", err)
+	}
+
+	nextCursor := ""
+	if len(items) > limit {
+		items = items[:limit]
+		last := items[len(items)-1]
+		nextCursor = encodeTraceCursor(last.Timestamp, last.ID)
+	}
+
+	return &TraceExportResult{
+		Items:      items,
+		NextCursor: nextCursor,
+	}, nil
+}
+
 func (s *PostgresStore) GetUsageSummary(ctx context.Context, filter AnalyticsFilter) (*UsageSummary, error) {
 	whereSQL, args := buildPostgresAnalyticsWhere(filter)
 	row := s.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(total_tokens), 0) FROM traces WHERE "+whereSQL, args...)
@@ -1025,6 +1083,62 @@ func buildPostgresTraceWhere(filter TraceFilter) (string, []any, error) {
 	return builder.where(), builder.args, nil
 }
 
+func buildPostgresTraceExportWhere(filter TraceExportFilter) (string, []any, error) {
+	builder := newPostgresWhereBuilder()
+
+	if filter.OrgID != "" {
+		builder.addComparison("org_id", "=", filter.OrgID)
+	}
+	if filter.WorkspaceID != "" {
+		builder.addComparison("workspace_id", "=", filter.WorkspaceID)
+	}
+	if filter.TraceGroupID != "" {
+		builder.addComparison("trace_group_id", "=", filter.TraceGroupID)
+	}
+	if filter.ThreadID != "" {
+		builder.addComparison("metadata ->> 'lineage_thread_id'", "=", filter.ThreadID)
+	}
+	if filter.RunID != "" {
+		builder.addComparison("metadata ->> 'lineage_run_id'", "=", filter.RunID)
+	}
+	if filter.Provider != "" {
+		builder.addComparison("provider", "=", filter.Provider)
+	}
+	if filter.Model != "" {
+		builder.addComparison("model", "=", filter.Model)
+	}
+	if filter.APIKeyHash != "" {
+		builder.addComparison("api_key_hash", "=", filter.APIKeyHash)
+	}
+	if filter.StatusCode > 0 {
+		builder.addComparison("response_status", "=", filter.StatusCode)
+	}
+	if filter.MinTokens > 0 {
+		builder.addComparison("total_tokens", ">=", filter.MinTokens)
+	}
+	if filter.MaxTokens > 0 {
+		builder.addComparison("total_tokens", "<=", filter.MaxTokens)
+	}
+	if !filter.From.IsZero() {
+		builder.addComparison("timestamp", ">=", filter.From.UTC())
+	}
+	if !filter.To.IsZero() {
+		builder.addComparison("timestamp", "<", filter.To.UTC())
+	}
+	if filter.Cursor != "" {
+		cursorTime, id, err := decodeTraceCursor(filter.Cursor)
+		if err != nil {
+			return "", nil, err
+		}
+		p1 := builder.addArg(cursorTime.UTC())
+		p2 := builder.addArg(cursorTime.UTC())
+		p3 := builder.addArg(id)
+		builder.addCondition("(timestamp > " + p1 + " OR (timestamp = " + p2 + " AND id > " + p3 + "))")
+	}
+
+	return builder.where(), builder.args, nil
+}
+
 func buildPostgresAnalyticsWhere(filter AnalyticsFilter) (string, []any) {
 	builder := newPostgresWhereBuilder()
 
@@ -1243,6 +1357,157 @@ func scanPostgresTraceRow(scanner rowScanner) (*Trace, error) {
 	}
 	if createdAt.Valid {
 		item.CreatedAt = createdAt.Time.UTC()
+	}
+
+	if item.TimeToFirstTokenUS > 0 && item.TimeToFirstTokenMS == 0 {
+		item.TimeToFirstTokenMS = (item.TimeToFirstTokenUS + 999) / 1000
+	}
+	if item.TimeToFirstTokenMS > 0 && item.TimeToFirstTokenUS == 0 {
+		item.TimeToFirstTokenUS = item.TimeToFirstTokenMS * 1000
+	}
+	if item.OrgID == "" {
+		item.OrgID = "default"
+	}
+	if item.WorkspaceID == "" {
+		item.WorkspaceID = "default"
+	}
+
+	return &item, nil
+}
+
+func scanPostgresTraceExportRow(scanner rowScanner) (*Trace, error) {
+	var (
+		item               Trace
+		traceGroupID       sql.NullString
+		orgID              sql.NullString
+		workspaceID        sql.NullString
+		timestamp          sql.NullTime
+		requestHeaders     sql.NullString
+		requestBody        sql.NullString
+		responseStatus     sql.NullInt64
+		responseHeaders    sql.NullString
+		responseBody       sql.NullString
+		inputTokens        sql.NullInt64
+		outputTokens       sql.NullInt64
+		totalTokens        sql.NullInt64
+		latencyMS          sql.NullInt64
+		timeToFirstTokenMS sql.NullInt64
+		timeToFirstTokenUS sql.NullInt64
+		apiKeyHash         sql.NullString
+		gatewayKeyID       sql.NullString
+		estimatedCostUSD   sql.NullFloat64
+		metadata           sql.NullString
+		createdAt          sql.NullTime
+		requestBodyGzip    []byte
+		responseBodyGzip   []byte
+	)
+
+	if err := scanner.Scan(
+		&item.ID,
+		&traceGroupID,
+		&orgID,
+		&workspaceID,
+		&timestamp,
+		&item.Provider,
+		&item.Model,
+		&item.RequestMethod,
+		&item.RequestPath,
+		&requestHeaders,
+		&requestBody,
+		&responseStatus,
+		&responseHeaders,
+		&responseBody,
+		&inputTokens,
+		&outputTokens,
+		&totalTokens,
+		&latencyMS,
+		&timeToFirstTokenMS,
+		&timeToFirstTokenUS,
+		&apiKeyHash,
+		&gatewayKeyID,
+		&estimatedCostUSD,
+		&metadata,
+		&createdAt,
+		&requestBodyGzip,
+		&responseBodyGzip,
+	); err != nil {
+		return nil, err
+	}
+
+	if traceGroupID.Valid {
+		item.TraceGroupID = traceGroupID.String
+	}
+	if orgID.Valid {
+		item.OrgID = orgID.String
+	}
+	if workspaceID.Valid {
+		item.WorkspaceID = workspaceID.String
+	}
+	if timestamp.Valid {
+		item.Timestamp = timestamp.Time.UTC()
+	}
+	if requestHeaders.Valid {
+		item.RequestHeaders = requestHeaders.String
+	}
+	if requestBody.Valid {
+		item.RequestBody = requestBody.String
+	}
+	if responseStatus.Valid {
+		item.ResponseStatus = int(responseStatus.Int64)
+	}
+	if responseHeaders.Valid {
+		item.ResponseHeaders = responseHeaders.String
+	}
+	if responseBody.Valid {
+		item.ResponseBody = responseBody.String
+	}
+	if inputTokens.Valid {
+		item.InputTokens = int(inputTokens.Int64)
+	}
+	if outputTokens.Valid {
+		item.OutputTokens = int(outputTokens.Int64)
+	}
+	if totalTokens.Valid {
+		item.TotalTokens = int(totalTokens.Int64)
+	}
+	if latencyMS.Valid {
+		item.LatencyMS = latencyMS.Int64
+	}
+	if timeToFirstTokenMS.Valid {
+		item.TimeToFirstTokenMS = timeToFirstTokenMS.Int64
+	}
+	if timeToFirstTokenUS.Valid {
+		item.TimeToFirstTokenUS = timeToFirstTokenUS.Int64
+	}
+	if apiKeyHash.Valid {
+		item.APIKeyHash = apiKeyHash.String
+	}
+	if gatewayKeyID.Valid {
+		item.GatewayKeyID = gatewayKeyID.String
+	}
+	if estimatedCostUSD.Valid {
+		item.EstimatedCostUSD = estimatedCostUSD.Float64
+	}
+	if metadata.Valid {
+		item.Metadata = metadata.String
+	}
+	if createdAt.Valid {
+		item.CreatedAt = createdAt.Time.UTC()
+	}
+
+	if len(requestBodyGzip) > 0 {
+		body, err := gunzipTraceBody(requestBodyGzip)
+		if err != nil {
+			return nil, fmt.Errorf("decompress request body: %w", err)
+		}
+		item.RequestBody = body
+	}
+	if len(responseBodyGzip) > 0 {
+		body, err := gunzipTraceBody(responseBodyGzip)
+		if err != nil {
+			return nil, fmt.Errorf("decompress response body: %w", err)
+		}
+		item.ResponseBody = body
 	}
 
 	if item.TimeToFirstTokenUS > 0 && item.TimeToFirstTokenMS == 0 {

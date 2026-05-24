@@ -424,6 +424,53 @@ func (s *SQLiteStore) QueryTraces(ctx context.Context, filter TraceFilter) (*Tra
 	}, nil
 }
 
+func (s *SQLiteStore) ExportTraces(ctx context.Context, filter TraceExportFilter) (*TraceExportResult, error) {
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	whereSQL, args, err := buildTraceExportWhere(filter)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, limit+1)
+
+	query := "SELECT " + traceDetailSelectColumns + " FROM traces WHERE " + whereSQL + " ORDER BY timestamp ASC, id ASC LIMIT ?"
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("export traces: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]*Trace, 0, limit+1)
+	for rows.Next() {
+		row, err := scanTraceRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan trace export row: %w", err)
+		}
+		items = append(items, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate trace export rows: %w", err)
+	}
+
+	nextCursor := ""
+	if len(items) > limit {
+		items = items[:limit]
+		last := items[len(items)-1]
+		nextCursor = encodeTraceCursor(last.Timestamp, last.ID)
+	}
+
+	return &TraceExportResult{
+		Items:      items,
+		NextCursor: nextCursor,
+	}, nil
+}
+
 func (s *SQLiteStore) GetUsageSummary(ctx context.Context, filter AnalyticsFilter) (*UsageSummary, error) {
 	whereSQL, args := buildAnalyticsWhere(filter)
 	row := s.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(total_tokens), 0) FROM traces WHERE "+whereSQL, args...)
@@ -863,6 +910,77 @@ func buildTraceWhere(filter TraceFilter) (string, []any, error) {
 		}
 		where = append(where, "(created_at < ? OR (created_at = ? AND id < ?))")
 		args = append(args, createdAt.UTC(), createdAt.UTC(), id)
+	}
+
+	if len(where) == 0 {
+		return "1=1", args, nil
+	}
+	return strings.Join(where, " AND "), args, nil
+}
+
+func buildTraceExportWhere(filter TraceExportFilter) (string, []any, error) {
+	where := make([]string, 0, 12)
+	args := make([]any, 0, 12)
+
+	if filter.OrgID != "" {
+		where = append(where, "org_id = ?")
+		args = append(args, filter.OrgID)
+	}
+	if filter.WorkspaceID != "" {
+		where = append(where, "workspace_id = ?")
+		args = append(args, filter.WorkspaceID)
+	}
+	if filter.TraceGroupID != "" {
+		where = append(where, "trace_group_id = ?")
+		args = append(args, filter.TraceGroupID)
+	}
+	if filter.ThreadID != "" {
+		where = append(where, "json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.lineage_thread_id') = ?")
+		args = append(args, filter.ThreadID)
+	}
+	if filter.RunID != "" {
+		where = append(where, "json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.lineage_run_id') = ?")
+		args = append(args, filter.RunID)
+	}
+	if filter.Provider != "" {
+		where = append(where, "provider = ?")
+		args = append(args, filter.Provider)
+	}
+	if filter.Model != "" {
+		where = append(where, "model = ?")
+		args = append(args, filter.Model)
+	}
+	if filter.APIKeyHash != "" {
+		where = append(where, "api_key_hash = ?")
+		args = append(args, filter.APIKeyHash)
+	}
+	if filter.StatusCode > 0 {
+		where = append(where, "response_status = ?")
+		args = append(args, filter.StatusCode)
+	}
+	if filter.MinTokens > 0 {
+		where = append(where, "total_tokens >= ?")
+		args = append(args, filter.MinTokens)
+	}
+	if filter.MaxTokens > 0 {
+		where = append(where, "total_tokens <= ?")
+		args = append(args, filter.MaxTokens)
+	}
+	if !filter.From.IsZero() {
+		where = append(where, "timestamp >= ?")
+		args = append(args, filter.From.UTC())
+	}
+	if !filter.To.IsZero() {
+		where = append(where, "timestamp < ?")
+		args = append(args, filter.To.UTC())
+	}
+	if filter.Cursor != "" {
+		cursorTime, id, err := decodeTraceCursor(filter.Cursor)
+		if err != nil {
+			return "", nil, err
+		}
+		where = append(where, "(timestamp > ? OR (timestamp = ? AND id > ?))")
+		args = append(args, cursorTime.UTC(), cursorTime.UTC(), id)
 	}
 
 	if len(where) == 0 {

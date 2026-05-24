@@ -16,6 +16,25 @@ tracing:
   capture_bodies: false
   body_max_size: 1048576
 
+backup:
+  request_details:
+    enabled: false
+    timezone: Local
+    daily_at: "02:00"
+    temp_dir: ./data/backup-tmp
+    page_size: 500
+    shard_max_bytes: 209715200
+    retry:
+      max_attempts: 5
+      initial_backoff_ms: 1000
+      max_backoff_ms: 30000
+    s3:
+      bucket: ""
+      prefix: request-details
+      region: ""
+      endpoint: ""
+      force_path_style: false
+
 observability:
   otel:
     enabled: false

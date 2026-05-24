@@ -30,6 +30,42 @@ tracing:
   # 每个请求体和每个响应体最多采集的字节数。
   body_max_size: 1048576
 
+# 请求详情备份配置。默认关闭；开启后会由备份调度器按日导出 request/response 详情。
+backup:
+  request_details:
+    # 是否启用请求详情备份。关闭时不要求配置 bucket。
+    enabled: false
+    # 生成每日备份窗口时使用的 IANA 时区，例如 UTC 或 Asia/Shanghai。
+    timezone: Local
+    # 每日启动时间，24 小时制 HH:MM。
+    daily_at: "02:00"
+    # 本地临时分片目录；Docker 部署时建议挂载到宿主机。
+    temp_dir: ./data/backup-tmp
+    # 从追踪存储分页读取请求详情时的每页记录数。
+    page_size: 500
+    # 单个 gzip NDJSON 分片目标大小，单位字节。默认 200MiB。
+    shard_max_bytes: 209715200
+    # 备份失败重试策略。
+    retry:
+      # 单次备份任务最多尝试次数。
+      max_attempts: 5
+      # 首次重试等待时间，单位毫秒。
+      initial_backoff_ms: 1000
+      # 最大重试等待时间，单位毫秒。
+      max_backoff_ms: 30000
+    # S3 或兼容对象存储配置。凭证走 AWS SDK 默认凭证链或标准 AWS_* 环境变量。
+    s3:
+      # 备份对象存储桶名称。enabled=true 时必填。
+      bucket: ""
+      # 备份对象名前缀；实际对象会写入 prefix/YYMMDD/。
+      prefix: request-details
+      # AWS 区域。使用默认凭证链可留空。
+      region: ""
+      # S3 兼容服务 endpoint，可留空使用 AWS 默认 endpoint。
+      endpoint: ""
+      # MinIO 等兼容服务可能需要 path-style。
+      force_path_style: false
+
 # OpenTelemetry 与 Prometheus 可观测性配置。
 observability:
   otel:

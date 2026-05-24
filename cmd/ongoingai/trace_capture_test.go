@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ongoingai/gateway/internal/config"
 	"github.com/ongoingai/gateway/internal/providers"
@@ -60,6 +61,29 @@ func TestBuildTraceRecordParsesButDoesNotStoreBodiesWhenDisabled(t *testing.T) {
 	}
 	if metadata["api_key_last4"] != "3456" {
 		t.Fatalf("api_key_last4=%v, want 3456", metadata["api_key_last4"])
+	}
+}
+
+func TestBuildTraceRecordUsesRequestStartTimeForTimestamp(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Default()
+	startedAt := time.Date(2026, 2, 12, 1, 0, 0, 123, time.UTC)
+	exchange := &proxy.CapturedExchange{
+		StartedAt: startedAt,
+		Method:    http.MethodPost,
+		Path:      "/llm/v1/messages",
+	}
+
+	record := buildTraceRecord(cfg, providers.DefaultRegistry(), exchange)
+	if !record.Timestamp.Equal(startedAt) {
+		t.Fatalf("timestamp=%s, want request start %s", record.Timestamp.Format(time.RFC3339Nano), startedAt.Format(time.RFC3339Nano))
+	}
+	if record.CreatedAt.IsZero() {
+		t.Fatal("created_at should still be set")
+	}
+	if record.CreatedAt.Equal(record.Timestamp) {
+		t.Fatal("created_at should reflect trace creation time, not request start")
 	}
 }
 

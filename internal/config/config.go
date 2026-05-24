@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ongoingai/gateway/internal/pathutil"
 	"gopkg.in/yaml.v3"
@@ -23,6 +24,7 @@ type Config struct {
 	PII           PIIConfig           `yaml:"pii"`
 	Auth          AuthConfig          `yaml:"auth"`
 	Limits        LimitsConfig        `yaml:"limits"`
+	Backup        BackupConfig        `yaml:"backup"`
 }
 
 type ServerConfig struct {
@@ -287,6 +289,40 @@ type UsageLimitConfig struct {
 	MaxCostUSDPerDay  float64 `yaml:"max_cost_usd_per_day"`
 }
 
+// BackupConfig controls scheduled exports for data that should leave the
+// primary trace store.
+type BackupConfig struct {
+	RequestDetails BackupRequestDetailsConfig `yaml:"request_details"`
+}
+
+// BackupRequestDetailsConfig controls scheduled request/response detail backup.
+type BackupRequestDetailsConfig struct {
+	Enabled       bool                      `yaml:"enabled"`
+	Timezone      string                    `yaml:"timezone"`
+	DailyAt       string                    `yaml:"daily_at"`
+	TempDir       string                    `yaml:"temp_dir"`
+	PageSize      int                       `yaml:"page_size"`
+	ShardMaxBytes int64                     `yaml:"shard_max_bytes"`
+	Retry         BackupRequestDetailsRetry `yaml:"retry"`
+	S3            BackupRequestDetailsS3    `yaml:"s3"`
+}
+
+// BackupRequestDetailsRetry controls retry behavior for request details backup.
+type BackupRequestDetailsRetry struct {
+	MaxAttempts      int `yaml:"max_attempts"`
+	InitialBackoffMS int `yaml:"initial_backoff_ms"`
+	MaxBackoffMS     int `yaml:"max_backoff_ms"`
+}
+
+// BackupRequestDetailsS3 controls where request detail backup artifacts are uploaded.
+type BackupRequestDetailsS3 struct {
+	Bucket         string `yaml:"bucket"`
+	Prefix         string `yaml:"prefix"`
+	Region         string `yaml:"region"`
+	Endpoint       string `yaml:"endpoint"`
+	ForcePathStyle bool   `yaml:"force_path_style"`
+}
+
 type GatewayKeyConfig struct {
 	ID          string   `yaml:"id"`
 	Token       string   `yaml:"token"`
@@ -378,6 +414,24 @@ func Default() Config {
 			Enabled: false,
 			Header:  "X-OngoingAI-Gateway-Key",
 		},
+		Backup: BackupConfig{
+			RequestDetails: BackupRequestDetailsConfig{
+				Enabled:       false,
+				Timezone:      "Local",
+				DailyAt:       "02:00",
+				TempDir:       "./data/backup-tmp",
+				PageSize:      500,
+				ShardMaxBytes: 200 * 1024 * 1024,
+				Retry: BackupRequestDetailsRetry{
+					MaxAttempts:      5,
+					InitialBackoffMS: 1000,
+					MaxBackoffMS:     30000,
+				},
+				S3: BackupRequestDetailsS3{
+					Prefix: "request-details",
+				},
+			},
+		},
 	}
 }
 
@@ -457,6 +511,67 @@ func Validate(cfg Config) error {
 	}
 	if err := validateOTelConfig(cfg.Observability.OTel, providerPrefixes); err != nil {
 		return err
+	}
+	if err := validateBackupConfig(cfg.Backup); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func validateBackupConfig(cfg BackupConfig) error {
+	return validateBackupRequestDetailsConfig(cfg.RequestDetails)
+}
+
+func validateBackupRequestDetailsConfig(cfg BackupRequestDetailsConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+
+	if strings.TrimSpace(cfg.S3.Bucket) == "" {
+		return errors.New("backup.request_details.s3.bucket is required when backup.request_details.enabled=true")
+	}
+	if strings.TrimSpace(cfg.Timezone) == "" {
+		return errors.New("backup.request_details.timezone is required when backup.request_details.enabled=true")
+	}
+	if _, err := time.LoadLocation(strings.TrimSpace(cfg.Timezone)); err != nil {
+		return fmt.Errorf("backup.request_details.timezone must be a valid IANA timezone (got %q): %w", cfg.Timezone, err)
+	}
+	if strings.TrimSpace(cfg.DailyAt) == "" {
+		return errors.New("backup.request_details.daily_at is required when backup.request_details.enabled=true")
+	}
+	if _, err := time.Parse("15:04", strings.TrimSpace(cfg.DailyAt)); err != nil {
+		return fmt.Errorf("backup.request_details.daily_at must use HH:MM 24-hour format (got %q): %w", cfg.DailyAt, err)
+	}
+	if strings.TrimSpace(cfg.TempDir) == "" {
+		return errors.New("backup.request_details.temp_dir is required when backup.request_details.enabled=true")
+	}
+	if cfg.Retry.MaxAttempts <= 0 {
+		return fmt.Errorf("backup.request_details.retry.max_attempts must be > 0 (got %d)", cfg.Retry.MaxAttempts)
+	}
+	if cfg.Retry.InitialBackoffMS <= 0 {
+		return fmt.Errorf("backup.request_details.retry.initial_backoff_ms must be > 0 (got %d)", cfg.Retry.InitialBackoffMS)
+	}
+	if cfg.Retry.MaxBackoffMS <= 0 {
+		return fmt.Errorf("backup.request_details.retry.max_backoff_ms must be > 0 (got %d)", cfg.Retry.MaxBackoffMS)
+	}
+	if cfg.Retry.MaxBackoffMS < cfg.Retry.InitialBackoffMS {
+		return fmt.Errorf("backup.request_details.retry.max_backoff_ms must be >= initial_backoff_ms (got %d < %d)", cfg.Retry.MaxBackoffMS, cfg.Retry.InitialBackoffMS)
+	}
+	if cfg.PageSize <= 0 {
+		return fmt.Errorf("backup.request_details.page_size must be > 0 (got %d)", cfg.PageSize)
+	}
+	if cfg.ShardMaxBytes <= 0 {
+		return fmt.Errorf("backup.request_details.shard_max_bytes must be > 0 (got %d)", cfg.ShardMaxBytes)
+	}
+	if endpoint := strings.TrimSpace(cfg.S3.Endpoint); endpoint != "" {
+		parsed, err := url.Parse(endpoint)
+		if err != nil {
+			return fmt.Errorf("parse backup.request_details.s3.endpoint: %w", err)
+		}
+		if strings.TrimSpace(parsed.Scheme) == "" || strings.TrimSpace(parsed.Host) == "" {
+			return fmt.Errorf("backup.request_details.s3.endpoint must include scheme and host (got %q)", cfg.S3.Endpoint)
+		}
 	}
 
 	return nil
@@ -757,6 +872,85 @@ func applyEnv(cfg *Config) error {
 	}
 	if authHeader := os.Getenv("ONGOINGAI_AUTH_HEADER"); authHeader != "" {
 		cfg.Auth.Header = authHeader
+	}
+
+	if err := applyBackupEnv(cfg); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func applyBackupEnv(cfg *Config) error {
+	if enabled := os.Getenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_ENABLED"); enabled != "" {
+		v, err := strconv.ParseBool(enabled)
+		if err != nil {
+			return fmt.Errorf("invalid ONGOINGAI_BACKUP_REQUEST_DETAILS_ENABLED: %w", err)
+		}
+		cfg.Backup.RequestDetails.Enabled = v
+	}
+	if timezone := os.Getenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_TIMEZONE"); timezone != "" {
+		cfg.Backup.RequestDetails.Timezone = timezone
+	}
+	if dailyAt := os.Getenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_DAILY_AT"); dailyAt != "" {
+		cfg.Backup.RequestDetails.DailyAt = dailyAt
+	}
+	if tempDir := os.Getenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_TEMP_DIR"); tempDir != "" {
+		cfg.Backup.RequestDetails.TempDir = tempDir
+	}
+	if pageSize := os.Getenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_PAGE_SIZE"); pageSize != "" {
+		v, err := strconv.Atoi(pageSize)
+		if err != nil {
+			return fmt.Errorf("invalid ONGOINGAI_BACKUP_REQUEST_DETAILS_PAGE_SIZE: %w", err)
+		}
+		cfg.Backup.RequestDetails.PageSize = v
+	}
+	if shardMaxBytes := os.Getenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_SHARD_MAX_BYTES"); shardMaxBytes != "" {
+		v, err := strconv.ParseInt(shardMaxBytes, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid ONGOINGAI_BACKUP_REQUEST_DETAILS_SHARD_MAX_BYTES: %w", err)
+		}
+		cfg.Backup.RequestDetails.ShardMaxBytes = v
+	}
+	if retryMaxAttempts := os.Getenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_RETRY_MAX_ATTEMPTS"); retryMaxAttempts != "" {
+		v, err := strconv.Atoi(retryMaxAttempts)
+		if err != nil {
+			return fmt.Errorf("invalid ONGOINGAI_BACKUP_REQUEST_DETAILS_RETRY_MAX_ATTEMPTS: %w", err)
+		}
+		cfg.Backup.RequestDetails.Retry.MaxAttempts = v
+	}
+	if retryInitialBackoffMS := os.Getenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_RETRY_INITIAL_BACKOFF_MS"); retryInitialBackoffMS != "" {
+		v, err := strconv.Atoi(retryInitialBackoffMS)
+		if err != nil {
+			return fmt.Errorf("invalid ONGOINGAI_BACKUP_REQUEST_DETAILS_RETRY_INITIAL_BACKOFF_MS: %w", err)
+		}
+		cfg.Backup.RequestDetails.Retry.InitialBackoffMS = v
+	}
+	if retryMaxBackoffMS := os.Getenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_RETRY_MAX_BACKOFF_MS"); retryMaxBackoffMS != "" {
+		v, err := strconv.Atoi(retryMaxBackoffMS)
+		if err != nil {
+			return fmt.Errorf("invalid ONGOINGAI_BACKUP_REQUEST_DETAILS_RETRY_MAX_BACKOFF_MS: %w", err)
+		}
+		cfg.Backup.RequestDetails.Retry.MaxBackoffMS = v
+	}
+	if bucket := os.Getenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_BUCKET"); bucket != "" {
+		cfg.Backup.RequestDetails.S3.Bucket = bucket
+	}
+	if prefix := os.Getenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_PREFIX"); prefix != "" {
+		cfg.Backup.RequestDetails.S3.Prefix = prefix
+	}
+	if region := os.Getenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_REGION"); region != "" {
+		cfg.Backup.RequestDetails.S3.Region = region
+	}
+	if endpoint := os.Getenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_ENDPOINT"); endpoint != "" {
+		cfg.Backup.RequestDetails.S3.Endpoint = endpoint
+	}
+	if forcePathStyle := os.Getenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_FORCE_PATH_STYLE"); forcePathStyle != "" {
+		v, err := strconv.ParseBool(forcePathStyle)
+		if err != nil {
+			return fmt.Errorf("invalid ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_FORCE_PATH_STYLE: %w", err)
+		}
+		cfg.Backup.RequestDetails.S3.ForcePathStyle = v
 	}
 
 	return nil

@@ -110,7 +110,9 @@ func TestBodyCaptureMiddlewareCapturesNonStreamingBodies(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/openai/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o-mini"}`))
 	rec := httptest.NewRecorder()
+	before := time.Now().UTC()
 	handler.ServeHTTP(rec, req)
+	after := time.Now().UTC()
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status=%d, want %d", rec.Code, http.StatusCreated)
@@ -126,6 +128,12 @@ func TestBodyCaptureMiddlewareCapturesNonStreamingBodies(t *testing.T) {
 	}
 	if captured.StatusCode != http.StatusCreated {
 		t.Fatalf("captured status=%d, want %d", captured.StatusCode, http.StatusCreated)
+	}
+	if captured.StartedAt.IsZero() {
+		t.Fatal("captured started_at should be set")
+	}
+	if captured.StartedAt.Before(before) || captured.StartedAt.After(after) {
+		t.Fatalf("captured started_at=%s outside request window %s..%s", captured.StartedAt.Format(time.RFC3339Nano), before.Format(time.RFC3339Nano), after.Format(time.RFC3339Nano))
 	}
 	if string(captured.RequestBody) != `{"model":"gpt-4o-mini"}` {
 		t.Fatalf("captured request body=%q, want %q", string(captured.RequestBody), `{"model":"gpt-4o-mini"}`)

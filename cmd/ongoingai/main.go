@@ -20,6 +20,7 @@ import (
 
 	"github.com/ongoingai/gateway/internal/api"
 	"github.com/ongoingai/gateway/internal/auth"
+	"github.com/ongoingai/gateway/internal/backup"
 	"github.com/ongoingai/gateway/internal/config"
 	"github.com/ongoingai/gateway/internal/configstore"
 	"github.com/ongoingai/gateway/internal/correlation"
@@ -38,6 +39,7 @@ const gatewayKeyRefreshInterval = 30 * time.Second
 const gatewayKeyCacheMaxStaleness = 60 * time.Second
 const traceWriterShutdownTimeout = 5 * time.Second
 const otelShutdownTimeout = 5 * time.Second
+const requestDetailsBackupSchedulerShutdownTimeout = 5 * time.Second
 const serverReadHeaderTimeout = 10 * time.Second
 const serverReadTimeout = 30 * time.Second
 const serverIdleTimeout = 2 * time.Minute
@@ -71,6 +73,15 @@ type traceWriterQueueCapProvider interface {
 
 var newTraceWriter = func(store trace.TraceStore, bufferSize int) asyncTraceWriter {
 	return trace.NewWriter(store, bufferSize)
+}
+
+type requestDetailsBackupScheduler interface {
+	Start(ctx context.Context)
+	Shutdown(ctx context.Context) error
+}
+
+var newRequestDetailsBackupScheduler = func(cfg config.BackupRequestDetailsConfig, store trace.TraceStore, logger *slog.Logger) (requestDetailsBackupScheduler, error) {
+	return newRequestDetailsBackupSchedulerFromConfig(context.Background(), cfg, store, logger)
 }
 
 var signalNotifyContext = signal.NotifyContext
@@ -397,6 +408,14 @@ func runServe(args []string) int {
 	if reader, ok := traceWriter.(trace.TracePipelineDiagnosticsReader); ok {
 		tracePipelineReader = reader
 	}
+	var backupScheduler requestDetailsBackupScheduler
+	if cfg.Backup.RequestDetails.Enabled {
+		backupScheduler, err = newRequestDetailsBackupScheduler(cfg.Backup.RequestDetails, traceStore, logger)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to initialize request details backup scheduler: %v\n", err)
+			return 1
+		}
+	}
 
 	gatewayKeyStore, err := newGatewayKeyStore(cfg)
 	if err != nil {
@@ -601,10 +620,15 @@ func runServe(args []string) int {
 		"auth_enabled", cfg.Auth.Enabled,
 		"prometheus_enabled", cfg.Observability.OTel.PrometheusEnabled,
 		"prometheus_path", cfg.Observability.OTel.PrometheusPath,
+		"request_details_backup_enabled", cfg.Backup.RequestDetails.Enabled,
 	)
 
 	ctx, stop := signalNotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if backupScheduler != nil {
+		backupScheduler.Start(ctx)
+		defer shutdownRequestDetailsBackupScheduler(logger, backupScheduler, requestDetailsBackupSchedulerShutdownTimeout)
+	}
 	if authorizerCache != nil {
 		go startGatewayAuthRefresher(ctx, authorizerCache, cfg, gatewayKeyStore, logger)
 	}
@@ -671,6 +695,178 @@ func newGatewayServer(cfg config.Config, logger *slog.Logger, handler http.Handl
 		ReadTimeout:       serverReadTimeout,
 		IdleTimeout:       serverIdleTimeout,
 	}
+}
+
+type requestDetailsTraceExporter struct {
+	store    trace.TraceExporter
+	pageSize int
+}
+
+func (e requestDetailsTraceExporter) ExportTraces(ctx context.Context, window backup.Window, yield func(*trace.Trace) error) error {
+	if e.store == nil {
+		return errors.New("trace exporter is not configured")
+	}
+	limit := e.pageSize
+	if limit <= 0 {
+		limit = 500
+	}
+
+	cursor := ""
+	for {
+		result, err := e.store.ExportTraces(ctx, trace.TraceExportFilter{
+			From:   window.Start.UTC(),
+			To:     window.End.UTC(),
+			Limit:  limit,
+			Cursor: cursor,
+		})
+		if err != nil {
+			return err
+		}
+		for _, item := range result.Items {
+			if err := yield(item); err != nil {
+				return err
+			}
+		}
+		if result.NextCursor == "" {
+			return nil
+		}
+		cursor = result.NextCursor
+	}
+}
+
+type requestDetailsBackupSchedulerRunner struct {
+	scheduler *backup.Scheduler
+	logger    *slog.Logger
+
+	mu      sync.Mutex
+	cancel  context.CancelFunc
+	done    chan error
+	started bool
+}
+
+func (r *requestDetailsBackupSchedulerRunner) Start(ctx context.Context) {
+	if r == nil || r.scheduler == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	r.mu.Lock()
+	if r.started {
+		r.mu.Unlock()
+		return
+	}
+	workerCtx, cancel := context.WithCancel(ctx)
+	r.cancel = cancel
+	r.done = make(chan error, 1)
+	r.started = true
+	r.mu.Unlock()
+
+	go func() {
+		err := r.scheduler.Start(workerCtx)
+		r.done <- err
+		close(r.done)
+		if err != nil && !errors.Is(err, context.Canceled) && r.logger != nil {
+			r.logger.Error("request details backup scheduler stopped", "error", err)
+		}
+	}()
+}
+
+func (r *requestDetailsBackupSchedulerRunner) Shutdown(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	r.mu.Lock()
+	cancel := r.cancel
+	done := r.done
+	started := r.started
+	r.mu.Unlock()
+	if !started {
+		return nil
+	}
+	if cancel != nil {
+		cancel()
+	}
+
+	select {
+	case err := <-done:
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func newRequestDetailsBackupSchedulerFromConfig(
+	ctx context.Context,
+	cfg config.BackupRequestDetailsConfig,
+	store trace.TraceStore,
+	logger *slog.Logger,
+) (requestDetailsBackupScheduler, error) {
+	exportStore, ok := store.(trace.TraceExporter)
+	if !ok {
+		return nil, errors.New("trace store does not support request details export")
+	}
+	loc, err := time.LoadLocation(strings.TrimSpace(cfg.Timezone))
+	if err != nil {
+		return nil, fmt.Errorf("load backup timezone: %w", err)
+	}
+	runAt, err := parseRequestDetailsBackupDailyAt(cfg.DailyAt)
+	if err != nil {
+		return nil, err
+	}
+	uploader, err := backup.NewS3Uploader(ctx, backup.S3UploaderConfig{
+		Bucket:    cfg.S3.Bucket,
+		Region:    cfg.S3.Region,
+		Endpoint:  cfg.S3.Endpoint,
+		PathStyle: cfg.S3.ForcePathStyle,
+	})
+	if err != nil {
+		return nil, err
+	}
+	runner, err := backup.NewRunner(requestDetailsTraceExporter{
+		store:    exportStore,
+		pageSize: cfg.PageSize,
+	}, uploader, backup.RunnerOptions{
+		LocalDir:          cfg.TempDir,
+		KeyPrefix:         cfg.S3.Prefix,
+		MaxPartBytes:      cfg.ShardMaxBytes,
+		MaxUploadAttempts: cfg.Retry.MaxAttempts,
+		RetryBackoff:      time.Duration(cfg.Retry.InitialBackoffMS) * time.Millisecond,
+		RetryMaxBackoff:   time.Duration(cfg.Retry.MaxBackoffMS) * time.Millisecond,
+		Location:          loc,
+	})
+	if err != nil {
+		return nil, err
+	}
+	scheduler, err := backup.NewScheduler(runner, backup.SchedulerOptions{
+		Location: loc,
+		RunAt:    runAt,
+		ErrorHandler: func(err error) {
+			if logger != nil {
+				logger.Error("request details backup run failed", "error", err)
+			}
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &requestDetailsBackupSchedulerRunner{scheduler: scheduler, logger: logger}, nil
+}
+
+func parseRequestDetailsBackupDailyAt(raw string) (time.Duration, error) {
+	parsed, err := time.Parse("15:04", strings.TrimSpace(raw))
+	if err != nil {
+		return 0, fmt.Errorf("parse backup daily_at: %w", err)
+	}
+	return time.Duration(parsed.Hour())*time.Hour + time.Duration(parsed.Minute())*time.Minute, nil
 }
 
 func shellInitScript(cfg config.Config) string {
@@ -917,6 +1113,19 @@ func shutdownTraceWriter(logger *slog.Logger, writer asyncTraceWriter, timeout t
 
 	if logger != nil {
 		logger.Info("flushed pending traces before shutdown", "duration_ms", time.Since(start).Milliseconds())
+	}
+}
+
+func shutdownRequestDetailsBackupScheduler(logger *slog.Logger, scheduler requestDetailsBackupScheduler, timeout time.Duration) {
+	if scheduler == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	if err := scheduler.Shutdown(ctx); err != nil && logger != nil {
+		logger.Error("failed to shutdown request details backup scheduler", "error", err, "timeout", timeout.String())
 	}
 }
 

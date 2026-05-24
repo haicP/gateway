@@ -44,6 +44,18 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	if cfg.Auth.Header != "X-OngoingAI-Gateway-Key" {
 		t.Fatalf("auth.header=%q, want X-OngoingAI-Gateway-Key", cfg.Auth.Header)
 	}
+	if cfg.Backup.RequestDetails.Enabled {
+		t.Fatalf("backup.request_details.enabled=%v, want false", cfg.Backup.RequestDetails.Enabled)
+	}
+	if cfg.Backup.RequestDetails.S3.Bucket != "" {
+		t.Fatalf("backup.request_details.s3.bucket=%q, want empty default", cfg.Backup.RequestDetails.S3.Bucket)
+	}
+	if cfg.Backup.RequestDetails.Timezone != "Local" {
+		t.Fatalf("backup.request_details.timezone=%q, want Local", cfg.Backup.RequestDetails.Timezone)
+	}
+	if cfg.Backup.RequestDetails.DailyAt != "02:00" {
+		t.Fatalf("backup.request_details.daily_at=%q, want 02:00", cfg.Backup.RequestDetails.DailyAt)
+	}
 	if cfg.EffectivePIIMode() != PIIModeOff {
 		t.Fatalf("pii mode=%q, want %q", cfg.EffectivePIIMode(), PIIModeOff)
 	}
@@ -95,6 +107,24 @@ auth:
       org_id: org-a
       workspace_id: workspace-a
       role: developer
+backup:
+  request_details:
+    enabled: false
+    timezone: America/Los_Angeles
+    daily_at: "03:15"
+    temp_dir: /tmp/ongoingai-backup
+    shard_max_bytes: 1024
+    page_size: 250
+    retry:
+      max_attempts: 4
+      initial_backoff_ms: 2000
+      max_backoff_ms: 45000
+    s3:
+      bucket: yaml-bucket
+      prefix: yaml-prefix
+      region: us-west-2
+      endpoint: https://s3.example.test
+      force_path_style: true
 `
 	if err := os.WriteFile(configPath, []byte(configYAML), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -110,6 +140,20 @@ auth:
 	t.Setenv("ONGOINGAI_PII_MODE", "redact_storage")
 	t.Setenv("ONGOINGAI_PII_POLICY_ID", "env-policy")
 	t.Setenv("ONGOINGAI_PII_HASH_SALT", "env-salt")
+	t.Setenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_ENABLED", "true")
+	t.Setenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_TIMEZONE", "Asia/Shanghai")
+	t.Setenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_DAILY_AT", "04:30")
+	t.Setenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_TEMP_DIR", "/tmp/env-backup")
+	t.Setenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_PAGE_SIZE", "1000")
+	t.Setenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_SHARD_MAX_BYTES", "2097152")
+	t.Setenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_RETRY_MAX_ATTEMPTS", "5")
+	t.Setenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_RETRY_INITIAL_BACKOFF_MS", "3000")
+	t.Setenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_RETRY_MAX_BACKOFF_MS", "60000")
+	t.Setenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_BUCKET", "env-bucket")
+	t.Setenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_PREFIX", "env-prefix")
+	t.Setenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_REGION", "cn-northwest-1")
+	t.Setenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_ENDPOINT", "https://s3.env.test")
+	t.Setenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_FORCE_PATH_STYLE", "true")
 
 	cfg, err := Load(configPath)
 	if err != nil {
@@ -163,6 +207,43 @@ auth:
 	}
 	if cfg.Auth.Keys[0].OrgID != "org-a" || cfg.Auth.Keys[0].WorkspaceID != "workspace-a" {
 		t.Fatalf("auth key org/workspace=%s/%s, want org-a/workspace-a", cfg.Auth.Keys[0].OrgID, cfg.Auth.Keys[0].WorkspaceID)
+	}
+	backup := cfg.Backup.RequestDetails
+	if !backup.Enabled {
+		t.Fatalf("backup.request_details.enabled=%v, want true (env override)", backup.Enabled)
+	}
+	if backup.Timezone != "Asia/Shanghai" {
+		t.Fatalf("backup.request_details.timezone=%q, want Asia/Shanghai", backup.Timezone)
+	}
+	if backup.DailyAt != "04:30" {
+		t.Fatalf("backup.request_details.daily_at=%q, want 04:30", backup.DailyAt)
+	}
+	if backup.TempDir != "/tmp/env-backup" {
+		t.Fatalf("backup.request_details.temp_dir=%q, want /tmp/env-backup", backup.TempDir)
+	}
+	if backup.PageSize != 1000 {
+		t.Fatalf("backup.request_details.page_size=%d, want 1000", backup.PageSize)
+	}
+	if backup.ShardMaxBytes != 2097152 {
+		t.Fatalf("backup.request_details.shard_max_bytes=%d, want 2097152", backup.ShardMaxBytes)
+	}
+	if backup.Retry.MaxAttempts != 5 || backup.Retry.InitialBackoffMS != 3000 || backup.Retry.MaxBackoffMS != 60000 {
+		t.Fatalf("backup.request_details.retry=%+v, want env retry values", backup.Retry)
+	}
+	if backup.S3.Bucket != "env-bucket" {
+		t.Fatalf("backup.request_details.s3.bucket=%q, want env-bucket", backup.S3.Bucket)
+	}
+	if backup.S3.Prefix != "env-prefix" {
+		t.Fatalf("backup.request_details.s3.prefix=%q, want env-prefix", backup.S3.Prefix)
+	}
+	if backup.S3.Region != "cn-northwest-1" {
+		t.Fatalf("backup.request_details.s3.region=%q, want cn-northwest-1", backup.S3.Region)
+	}
+	if backup.S3.Endpoint != "https://s3.env.test" {
+		t.Fatalf("backup.request_details.s3.endpoint=%q, want https://s3.env.test", backup.S3.Endpoint)
+	}
+	if !backup.S3.ForcePathStyle {
+		t.Fatalf("backup.request_details.s3.force_path_style=%v, want true", backup.S3.ForcePathStyle)
 	}
 }
 
@@ -278,6 +359,18 @@ func TestLoadInvalidOTELEnvReturnsError(t *testing.T) {
 	}
 }
 
+func TestLoadInvalidBackupRequestDetailsEnvReturnsError(t *testing.T) {
+	t.Setenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_PAGE_SIZE", "not-a-number")
+
+	_, err := Load("")
+	if err == nil {
+		t.Fatalf("Load() error=nil, want invalid env error")
+	}
+	if !strings.Contains(err.Error(), "invalid ONGOINGAI_BACKUP_REQUEST_DETAILS_PAGE_SIZE") {
+		t.Fatalf("error=%q, want ONGOINGAI_BACKUP_REQUEST_DETAILS_PAGE_SIZE validation message", err.Error())
+	}
+}
+
 func TestLoadAppliesStandardOTELEnvOverrides(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://otel-collector:4318")
 	t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", "false")
@@ -362,6 +455,132 @@ func TestValidateRequiresPostgresDSN(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "storage.dsn is required") {
 		t.Fatalf("error=%q, want storage.dsn validation message", err.Error())
+	}
+}
+
+func TestValidateAllowsDisabledBackupRequestDetailsWithoutBucket(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.Backup.RequestDetails.Enabled = false
+	cfg.Backup.RequestDetails.S3.Bucket = ""
+	cfg.Backup.RequestDetails.Timezone = ""
+	cfg.Backup.RequestDetails.DailyAt = ""
+	cfg.Backup.RequestDetails.Retry.MaxAttempts = 0
+	cfg.Backup.RequestDetails.ShardMaxBytes = 0
+	cfg.Backup.RequestDetails.PageSize = 0
+
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate() error=%v, want nil when request details backup is disabled", err)
+	}
+}
+
+func TestValidateAcceptsEnabledBackupRequestDetails(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.Backup.RequestDetails.Enabled = true
+	cfg.Backup.RequestDetails.S3.Bucket = "ongoingai-request-details"
+	cfg.Backup.RequestDetails.Timezone = "Asia/Shanghai"
+	cfg.Backup.RequestDetails.DailyAt = "03:30"
+
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate() error=%v, want nil for enabled request details backup", err)
+	}
+}
+
+func TestValidateRejectsInvalidBackupRequestDetailsConfig(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{
+			name: "missing bucket",
+			mutate: func(cfg *Config) {
+				cfg.Backup.RequestDetails.S3.Bucket = ""
+			},
+			wantErr: "backup.request_details.s3.bucket is required",
+		},
+		{
+			name: "invalid timezone",
+			mutate: func(cfg *Config) {
+				cfg.Backup.RequestDetails.Timezone = "Mars/Base"
+			},
+			wantErr: "backup.request_details.timezone",
+		},
+		{
+			name: "invalid daily at",
+			mutate: func(cfg *Config) {
+				cfg.Backup.RequestDetails.DailyAt = "25:00"
+			},
+			wantErr: "backup.request_details.daily_at",
+		},
+		{
+			name: "missing temp dir",
+			mutate: func(cfg *Config) {
+				cfg.Backup.RequestDetails.TempDir = ""
+			},
+			wantErr: "backup.request_details.temp_dir",
+		},
+		{
+			name: "invalid retry attempts",
+			mutate: func(cfg *Config) {
+				cfg.Backup.RequestDetails.Retry.MaxAttempts = 0
+			},
+			wantErr: "backup.request_details.retry.max_attempts",
+		},
+		{
+			name: "invalid retry backoff order",
+			mutate: func(cfg *Config) {
+				cfg.Backup.RequestDetails.Retry.InitialBackoffMS = 5000
+				cfg.Backup.RequestDetails.Retry.MaxBackoffMS = 1000
+			},
+			wantErr: "backup.request_details.retry.max_backoff_ms",
+		},
+		{
+			name: "invalid shard bytes",
+			mutate: func(cfg *Config) {
+				cfg.Backup.RequestDetails.ShardMaxBytes = 0
+			},
+			wantErr: "backup.request_details.shard_max_bytes",
+		},
+		{
+			name: "invalid page size",
+			mutate: func(cfg *Config) {
+				cfg.Backup.RequestDetails.PageSize = 0
+			},
+			wantErr: "backup.request_details.page_size",
+		},
+		{
+			name: "invalid s3 endpoint",
+			mutate: func(cfg *Config) {
+				cfg.Backup.RequestDetails.S3.Endpoint = "s3.example.test"
+			},
+			wantErr: "backup.request_details.s3.endpoint",
+		},
+	}
+
+	for _, tt := range cases {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := Default()
+			cfg.Backup.RequestDetails.Enabled = true
+			cfg.Backup.RequestDetails.S3.Bucket = "ongoingai-request-details"
+			tt.mutate(&cfg)
+
+			err := Validate(cfg)
+			if err == nil {
+				t.Fatalf("Validate() error=nil, want backup request details validation error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error=%q, want %q", err.Error(), tt.wantErr)
+			}
+		})
 	}
 }
 

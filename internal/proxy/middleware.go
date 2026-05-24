@@ -58,6 +58,7 @@ type CapturedExchange struct {
 	// Context carries the request context so downstream consumers (e.g. trace
 	// enqueue) can create child spans of the HTTP request span.
 	Context               context.Context
+	StartedAt             time.Time
 	Method                string
 	Path                  string
 	StatusCode            int
@@ -197,6 +198,7 @@ func BodyCaptureMiddleware(options BodyCaptureOptions, sink BodyCaptureSink, nex
 
 		sink(&CapturedExchange{
 			Context:               r.Context(),
+			StartedAt:             start.UTC(),
 			Method:                r.Method,
 			Path:                  r.URL.Path,
 			StatusCode:            statusCode,

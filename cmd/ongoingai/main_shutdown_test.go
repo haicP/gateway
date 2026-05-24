@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ongoingai/gateway/internal/config"
 	"github.com/ongoingai/gateway/internal/trace"
 )
 
@@ -195,6 +197,174 @@ auth:
 	}
 	if len(result.Items) != capturedWriter.EnqueueCalls() {
 		t.Fatalf("persisted trace count=%d, want %d", len(result.Items), capturedWriter.EnqueueCalls())
+	}
+}
+
+func TestRunServeDoesNotStartRequestDetailsBackupWhenDisabled(t *testing.T) {
+	configPath, port := writeServeConfigWithBackup(t, false)
+
+	originalSignalNotifyContext := signalNotifyContext
+	originalNewBackupScheduler := newRequestDetailsBackupScheduler
+	t.Cleanup(func() {
+		signalNotifyContext = originalSignalNotifyContext
+		newRequestDetailsBackupScheduler = originalNewBackupScheduler
+	})
+
+	shutdownCtx, shutdown := context.WithCancel(context.Background())
+	t.Cleanup(shutdown)
+	signalNotifyContext = func(_ context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
+		return shutdownCtx, func() {}
+	}
+
+	called := false
+	newRequestDetailsBackupScheduler = func(config.BackupRequestDetailsConfig, trace.TraceStore, *slog.Logger) (requestDetailsBackupScheduler, error) {
+		called = true
+		return &testRequestDetailsBackupScheduler{}, nil
+	}
+
+	exitCodeCh := make(chan int, 1)
+	go func() {
+		exitCodeCh <- runServe([]string{"--config", configPath})
+	}()
+
+	waitForHTTPReady(t, fmt.Sprintf("http://127.0.0.1:%d/api/health", port))
+	shutdown()
+	assertRunServeExitCode(t, exitCodeCh)
+	if called {
+		t.Fatal("backup scheduler factory was called when backup was disabled")
+	}
+}
+
+func TestRunServeStartsRequestDetailsBackupWhenEnabled(t *testing.T) {
+	configPath, port := writeServeConfigWithBackup(t, true)
+
+	originalSignalNotifyContext := signalNotifyContext
+	originalNewBackupScheduler := newRequestDetailsBackupScheduler
+	t.Cleanup(func() {
+		signalNotifyContext = originalSignalNotifyContext
+		newRequestDetailsBackupScheduler = originalNewBackupScheduler
+	})
+
+	shutdownCtx, shutdown := context.WithCancel(context.Background())
+	t.Cleanup(shutdown)
+	signalNotifyContext = func(_ context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
+		return shutdownCtx, func() {}
+	}
+
+	scheduler := &testRequestDetailsBackupScheduler{}
+	var gotConfig config.BackupRequestDetailsConfig
+	newRequestDetailsBackupScheduler = func(cfg config.BackupRequestDetailsConfig, _ trace.TraceStore, _ *slog.Logger) (requestDetailsBackupScheduler, error) {
+		gotConfig = cfg
+		return scheduler, nil
+	}
+
+	exitCodeCh := make(chan int, 1)
+	go func() {
+		exitCodeCh <- runServe([]string{"--config", configPath})
+	}()
+
+	waitForHTTPReady(t, fmt.Sprintf("http://127.0.0.1:%d/api/health", port))
+	shutdown()
+	assertRunServeExitCode(t, exitCodeCh)
+	if gotConfig.S3.Bucket != "request-details-test" {
+		t.Fatalf("backup scheduler config bucket=%q, want request-details-test", gotConfig.S3.Bucket)
+	}
+	if !scheduler.Started() {
+		t.Fatal("backup scheduler was not started")
+	}
+	if !scheduler.ShutdownCalled() {
+		t.Fatal("backup scheduler was not shutdown")
+	}
+}
+
+type testRequestDetailsBackupScheduler struct {
+	mu             sync.Mutex
+	started        bool
+	shutdownCalled bool
+}
+
+func (s *testRequestDetailsBackupScheduler) Start(context.Context) {
+	s.mu.Lock()
+	s.started = true
+	s.mu.Unlock()
+}
+
+func (s *testRequestDetailsBackupScheduler) Shutdown(context.Context) error {
+	s.mu.Lock()
+	s.shutdownCalled = true
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *testRequestDetailsBackupScheduler) Started() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.started
+}
+
+func (s *testRequestDetailsBackupScheduler) ShutdownCalled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.shutdownCalled
+}
+
+func writeServeConfigWithBackup(t *testing.T, enabled bool) (string, int) {
+	t.Helper()
+
+	port := freeTCPPort(t)
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "ongoingai.yaml")
+	backupBlock := "backup:\n  request_details:\n    enabled: false\n"
+	if enabled {
+		backupBlock = fmt.Sprintf(`backup:
+  request_details:
+    enabled: true
+    timezone: UTC
+    daily_at: "02:00"
+    temp_dir: %q
+    page_size: 10
+    shard_max_bytes: 1048576
+    retry:
+      max_attempts: 1
+      initial_backoff_ms: 1
+      max_backoff_ms: 1
+    s3:
+      bucket: request-details-test
+      prefix: request-details
+`, filepath.Join(tmpDir, "backup"))
+	}
+	configBody := fmt.Sprintf(`server:
+  host: 127.0.0.1
+  port: %d
+storage:
+  driver: sqlite
+  path: %q
+providers:
+  llm:
+    upstream: http://127.0.0.1:1
+    prefix: /llm
+tracing:
+  capture_bodies: false
+auth:
+  enabled: false
+  header: X-OngoingAI-Gateway-Key
+%s`, port, filepath.Join(tmpDir, "traces.db"), backupBlock)
+	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return configPath, port
+}
+
+func assertRunServeExitCode(t *testing.T, exitCodeCh <-chan int) {
+	t.Helper()
+
+	select {
+	case code := <-exitCodeCh:
+		if code != 0 {
+			t.Fatalf("runServe exit code=%d, want 0", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for runServe shutdown")
 	}
 }
 

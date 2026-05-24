@@ -25,6 +25,12 @@ type TraceStore interface {
 	GetErrorRateBreakdown(ctx context.Context, filter AnalyticsFilter, groupBy string) ([]ErrorRateStats, error)
 }
 
+// TraceExporter streams trace records in stable timestamp order for backups or
+// external archival jobs.
+type TraceExporter interface {
+	ExportTraces(ctx context.Context, filter TraceExportFilter) (*TraceExportResult, error)
+}
+
 type TraceFilter struct {
 	OrgID        string
 	WorkspaceID  string
@@ -43,7 +49,32 @@ type TraceFilter struct {
 	Cursor       string
 }
 
+// TraceExportFilter selects a stable, forward-only page of traces for export.
+type TraceExportFilter struct {
+	OrgID        string
+	WorkspaceID  string
+	TraceGroupID string
+	ThreadID     string
+	RunID        string
+	Provider     string
+	Model        string
+	APIKeyHash   string
+	StatusCode   int
+	MinTokens    int
+	MaxTokens    int
+	From         time.Time
+	To           time.Time
+	Limit        int
+	Cursor       string
+}
+
 type TraceResult struct {
+	Items      []*Trace
+	NextCursor string
+}
+
+// TraceExportResult contains one page of exported traces and the next-page cursor.
+type TraceExportResult struct {
 	Items      []*Trace
 	NextCursor string
 }

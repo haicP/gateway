@@ -81,6 +81,12 @@ func (summary *redactionSummary) merge(other redactionSummary) {
 
 func buildTraceRecord(cfg config.Config, registry *providers.Registry, exchange *proxy.CapturedExchange) *trace.Trace {
 	now := time.Now().UTC()
+	traceTimestamp := now
+	if exchange.StartedAt.IsZero() {
+		traceTimestamp = now
+	} else {
+		traceTimestamp = exchange.StartedAt.UTC()
+	}
 	traceID := newTraceID()
 
 	provider := detectProvider(cfg, exchange.Path)
@@ -239,7 +245,7 @@ func buildTraceRecord(cfg config.Config, registry *providers.Registry, exchange 
 	return &trace.Trace{
 		ID:                    traceID,
 		TraceGroupID:          lineage.groupID,
-		Timestamp:             now,
+		Timestamp:             traceTimestamp,
 		OrgID:                 nonEmpty(exchange.GatewayOrgID, "default"),
 		WorkspaceID:           nonEmpty(exchange.GatewayWorkspaceID, "default"),
 		GatewayKeyID:          exchange.GatewayKeyID,

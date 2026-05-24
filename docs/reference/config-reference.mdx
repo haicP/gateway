@@ -43,6 +43,25 @@ tracing:
   capture_bodies: false
   body_max_size: 1048576
 
+backup:
+  request_details:
+    enabled: false
+    timezone: Local
+    daily_at: "02:00"
+    temp_dir: ./data/backup-tmp
+    page_size: 500
+    shard_max_bytes: 209715200
+    retry:
+      max_attempts: 5
+      initial_backoff_ms: 1000
+      max_backoff_ms: 30000
+    s3:
+      bucket: ""
+      prefix: request-details
+      region: ""
+      endpoint: ""
+      force_path_style: false
+
 observability:
   otel:
     enabled: false
@@ -116,6 +135,7 @@ Treat this baseline as a starting point. Most production deployments adjust
 - `storage`: Trace storage backend selection and connection fields.
 - `providers`: Upstream endpoints and route prefixes.
 - `tracing`: Request and response body capture controls.
+- `backup`: Scheduled request detail backup to S3-compatible object storage.
 - `observability`: OpenTelemetry exporter and sampling controls.
 - `pii`: Storage redaction policy and detector behavior.
 - `auth`: Gateway authentication header and key configuration.
@@ -154,6 +174,30 @@ Each entry under `providers` uses the same schema. The default route is
 | --- | --- | --- | --- | --- |
 | `tracing.capture_bodies` | bool | `false` | No | If `true`, gateway stores captured request and response bodies after PII processing. |
 | `tracing.body_max_size` | int | `1048576` | No | Max captured bytes per request and response body. Set to `0` or a negative value to capture without an application-level truncation limit. |
+
+### `backup.request_details`
+
+| Field | Type | Default | Required | Notes |
+| --- | --- | --- | --- | --- |
+| `backup.request_details.enabled` | bool | `false` | No | Enables the scheduled backup worker. Keep this `false` on all but one instance in multi-instance deployments. |
+| `backup.request_details.timezone` | string | `Local` | Conditional | IANA timezone used to compute the previous-day window and daily run time. Required when enabled. |
+| `backup.request_details.daily_at` | string | `02:00` | Conditional | Daily run time in `HH:MM` 24-hour format. Required when enabled. |
+| `backup.request_details.temp_dir` | string | `./data/backup-tmp` | Conditional | Local directory for gzip NDJSON shard files before upload. Required when enabled. |
+| `backup.request_details.page_size` | int | `500` | Conditional | Number of trace rows to read per export page. Must be `> 0` when enabled. |
+| `backup.request_details.shard_max_bytes` | int64 | `209715200` | Conditional | Target max compressed shard size in bytes. Must be `> 0` when enabled. |
+| `backup.request_details.retry.max_attempts` | int | `5` | Conditional | Max upload attempts per shard. Must be `> 0` when enabled. |
+| `backup.request_details.retry.initial_backoff_ms` | int | `1000` | Conditional | Initial retry backoff in milliseconds. Must be `> 0` when enabled. |
+| `backup.request_details.retry.max_backoff_ms` | int | `30000` | Conditional | Max retry backoff in milliseconds. Must be at least the initial backoff when enabled. |
+| `backup.request_details.s3.bucket` | string | `""` | Conditional | Destination bucket. Required when enabled. Credentials use the AWS SDK default credential chain, not YAML. |
+| `backup.request_details.s3.prefix` | string | `request-details` | No | Object key prefix. Backups are written under `prefix/YYMMDD/`. |
+| `backup.request_details.s3.region` | string | `""` | No | AWS region override for the S3 client. |
+| `backup.request_details.s3.endpoint` | string | `""` | No | S3-compatible endpoint URL. Must include scheme and host when set. |
+| `backup.request_details.s3.force_path_style` | bool | `false` | No | Enables path-style addressing for S3-compatible stores such as MinIO. |
+
+Request detail backup exports the previous local calendar day as gzip NDJSON
+shards ordered by request start time. Each shard is uploaded only after it is
+fully written to `temp_dir`; successful uploads delete the local shard, while
+failed shards are retained after the configured finite retries.
 
 ### `observability`
 

@@ -1,6 +1,8 @@
 package trace
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"database/sql"
 	"errors"
@@ -13,6 +15,77 @@ import (
 	"testing"
 	"time"
 )
+
+type postgresExportScanner struct {
+	requestBodyGzip  []byte
+	responseBodyGzip []byte
+}
+
+func (s postgresExportScanner) Scan(dest ...any) error {
+	*(dest[0].(*string)) = "trace-export-scan"
+	*(dest[1].(*sql.NullString)) = sql.NullString{String: "group-1", Valid: true}
+	*(dest[2].(*sql.NullString)) = sql.NullString{String: "org-export", Valid: true}
+	*(dest[3].(*sql.NullString)) = sql.NullString{String: "workspace-export", Valid: true}
+	*(dest[4].(*sql.NullTime)) = sql.NullTime{Time: time.Date(2026, 2, 12, 1, 0, 0, 0, time.UTC), Valid: true}
+	*(dest[5].(*string)) = "openai"
+	*(dest[6].(*string)) = "gpt-4o-mini"
+	*(dest[7].(*string)) = "POST"
+	*(dest[8].(*string)) = "/openai/v1/chat/completions"
+	*(dest[9].(*sql.NullString)) = sql.NullString{String: `{"content-type":["application/json"]}`, Valid: true}
+	*(dest[10].(*sql.NullString)) = sql.NullString{String: "inline request", Valid: true}
+	*(dest[11].(*sql.NullInt64)) = sql.NullInt64{Int64: 200, Valid: true}
+	*(dest[12].(*sql.NullString)) = sql.NullString{String: `{"content-type":["application/json"]}`, Valid: true}
+	*(dest[13].(*sql.NullString)) = sql.NullString{String: "inline response", Valid: true}
+	*(dest[14].(*sql.NullInt64)) = sql.NullInt64{Int64: 10, Valid: true}
+	*(dest[15].(*sql.NullInt64)) = sql.NullInt64{Int64: 20, Valid: true}
+	*(dest[16].(*sql.NullInt64)) = sql.NullInt64{Int64: 30, Valid: true}
+	*(dest[17].(*sql.NullInt64)) = sql.NullInt64{Int64: 100, Valid: true}
+	*(dest[18].(*sql.NullInt64)) = sql.NullInt64{Int64: 12, Valid: true}
+	*(dest[19].(*sql.NullInt64)) = sql.NullInt64{Int64: 12000, Valid: true}
+	*(dest[20].(*sql.NullString)) = sql.NullString{String: "hash", Valid: true}
+	*(dest[21].(*sql.NullString)) = sql.NullString{String: "key-1", Valid: true}
+	*(dest[22].(*sql.NullFloat64)) = sql.NullFloat64{Float64: 0.001, Valid: true}
+	*(dest[23].(*sql.NullString)) = sql.NullString{String: `{"body_pii_status":"skipped_large_body"}`, Valid: true}
+	*(dest[24].(*sql.NullTime)) = sql.NullTime{Time: time.Date(2026, 2, 12, 1, 0, 1, 0, time.UTC), Valid: true}
+	*(dest[25].(*[]byte)) = s.requestBodyGzip
+	*(dest[26].(*[]byte)) = s.responseBodyGzip
+	return nil
+}
+
+func TestScanPostgresTraceExportRowDecompressesJoinedBodies(t *testing.T) {
+	t.Parallel()
+
+	requestBodyGzip := gzipTestBody(t, "compressed request")
+	responseBodyGzip := gzipTestBody(t, "compressed response")
+
+	got, err := scanPostgresTraceExportRow(postgresExportScanner{
+		requestBodyGzip:  requestBodyGzip,
+		responseBodyGzip: responseBodyGzip,
+	})
+	if err != nil {
+		t.Fatalf("scanPostgresTraceExportRow() error: %v", err)
+	}
+	if got.RequestBody != "compressed request" || got.ResponseBody != "compressed response" {
+		t.Fatalf("body=%q/%q, want decompressed joined bodies", got.RequestBody, got.ResponseBody)
+	}
+	if got.GatewayKeyID != "key-1" || got.TimeToFirstTokenUS != 12000 || got.TimeToFirstTokenMS != 12 {
+		t.Fatalf("metadata fields not scanned correctly: %+v", got)
+	}
+}
+
+func gzipTestBody(t *testing.T, body string) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	writer := gzip.NewWriter(&buf)
+	if _, err := writer.Write([]byte(body)); err != nil {
+		t.Fatalf("gzip write body: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("gzip close body: %v", err)
+	}
+	return buf.Bytes()
+}
 
 func TestPostgresStoreWritesAndQueriesTraces(t *testing.T) {
 	store := newPostgresTestStore(t)
@@ -278,6 +351,155 @@ func TestPostgresStoreWritesCompressedSpoolBodiesAndQueriesSummaries(t *testing.
 	}
 	if result.Items[0].RequestBody != "" || result.Items[0].ResponseBody != "" {
 		t.Fatalf("QueryTraces() returned body fields: request=%d response=%d", len(result.Items[0].RequestBody), len(result.Items[0].ResponseBody))
+	}
+}
+
+func TestPostgresStoreExportTracesOrdersPagesAndDecompressesBodies(t *testing.T) {
+	store := newPostgresTestStore(t)
+
+	idPrefix := fmt.Sprintf("trace-pg-export-%d-", time.Now().UnixNano())
+	cleanupPostgresTestTraces(t, store, idPrefix)
+
+	base := time.Date(2026, 2, 12, 1, 0, 0, 0, time.UTC)
+	requestBody := "compressed request body"
+	responseBody := "compressed response body"
+	requestPath := filepath.Join(t.TempDir(), "request.txt")
+	responsePath := filepath.Join(t.TempDir(), "response.txt")
+	if err := os.WriteFile(requestPath, []byte(requestBody), 0o600); err != nil {
+		t.Fatalf("write request body fixture: %v", err)
+	}
+	if err := os.WriteFile(responsePath, []byte(responseBody), 0o600); err != nil {
+		t.Fatalf("write response body fixture: %v", err)
+	}
+
+	traceA := idPrefix + "a"
+	traceB := idPrefix + "b"
+	traceC := idPrefix + "c"
+	traceTo := idPrefix + "to"
+	rows := []*Trace{
+		{
+			ID:             traceTo,
+			OrgID:          "org-export",
+			WorkspaceID:    "workspace-export",
+			Timestamp:      base.Add(2 * time.Second),
+			Provider:       "openai",
+			Model:          "gpt-4o-mini",
+			RequestMethod:  "POST",
+			RequestPath:    "/openai/v1/chat/completions",
+			RequestBody:    "excluded request",
+			ResponseBody:   "excluded response",
+			ResponseStatus: 200,
+			CreatedAt:      base.Add(20 * time.Second),
+		},
+		{
+			ID:                    traceA,
+			OrgID:                 "org-export",
+			WorkspaceID:           "workspace-export",
+			Timestamp:             base,
+			Provider:              "openai",
+			Model:                 "gpt-4o-mini",
+			RequestMethod:         "POST",
+			RequestPath:           "/openai/v1/chat/completions",
+			RequestBodyPath:       requestPath,
+			RequestBodyBytes:      int64(len(requestBody)),
+			ResponseBodyPath:      responsePath,
+			ResponseBodyBytes:     int64(len(responseBody)),
+			ResponseBodyTruncated: true,
+			ResponseStatus:        200,
+			Metadata:              `{"body_pii_status":"skipped_large_body"}`,
+			CreatedAt:             base.Add(30 * time.Second),
+		},
+		{
+			ID:             traceB,
+			OrgID:          "org-export",
+			WorkspaceID:    "workspace-export",
+			Timestamp:      base,
+			Provider:       "openai",
+			Model:          "gpt-4o-mini",
+			RequestMethod:  "POST",
+			RequestPath:    "/openai/v1/chat/completions",
+			RequestBody:    "inline request b",
+			ResponseBody:   "inline response b",
+			ResponseStatus: 200,
+			CreatedAt:      base.Add(10 * time.Second),
+		},
+		{
+			ID:             traceC,
+			OrgID:          "org-export",
+			WorkspaceID:    "workspace-export",
+			Timestamp:      base.Add(time.Second),
+			Provider:       "openai",
+			Model:          "gpt-4o-mini",
+			RequestMethod:  "POST",
+			RequestPath:    "/openai/v1/chat/completions",
+			RequestBody:    "inline request c",
+			ResponseBody:   "inline response c",
+			ResponseStatus: 200,
+			CreatedAt:      base.Add(5 * time.Second),
+		},
+		{
+			ID:             idPrefix + "cross-tenant",
+			OrgID:          "org-other",
+			WorkspaceID:    "workspace-export",
+			Timestamp:      base,
+			Provider:       "openai",
+			Model:          "gpt-4o-mini",
+			RequestMethod:  "POST",
+			RequestPath:    "/openai/v1/chat/completions",
+			RequestBody:    "cross request",
+			ResponseBody:   "cross response",
+			ResponseStatus: 200,
+			CreatedAt:      base.Add(40 * time.Second),
+		},
+	}
+	for _, row := range rows {
+		if err := store.WriteTrace(context.Background(), row); err != nil {
+			t.Fatalf("WriteTrace(%s) error: %v", row.ID, err)
+		}
+	}
+
+	firstPage, err := store.ExportTraces(context.Background(), TraceExportFilter{
+		OrgID:       "org-export",
+		WorkspaceID: "workspace-export",
+		From:        base,
+		To:          base.Add(2 * time.Second),
+		Limit:       1,
+	})
+	if err != nil {
+		t.Fatalf("ExportTraces(first page) error: %v", err)
+	}
+	if len(firstPage.Items) != 1 || firstPage.Items[0].ID != traceA {
+		t.Fatalf("first page returned unexpected items: %#v", firstPage.Items)
+	}
+	if firstPage.Items[0].RequestBody != requestBody || firstPage.Items[0].ResponseBody != responseBody {
+		t.Fatalf("first page body=%q/%q", firstPage.Items[0].RequestBody, firstPage.Items[0].ResponseBody)
+	}
+	if firstPage.NextCursor == "" {
+		t.Fatal("first page next cursor should not be empty")
+	}
+
+	secondPage, err := store.ExportTraces(context.Background(), TraceExportFilter{
+		OrgID:       "org-export",
+		WorkspaceID: "workspace-export",
+		From:        base,
+		To:          base.Add(2 * time.Second),
+		Limit:       10,
+		Cursor:      firstPage.NextCursor,
+	})
+	if err != nil {
+		t.Fatalf("ExportTraces(second page) error: %v", err)
+	}
+	if len(secondPage.Items) != 2 {
+		t.Fatalf("second page items=%d, want 2", len(secondPage.Items))
+	}
+	if secondPage.Items[0].ID != traceB || secondPage.Items[1].ID != traceC {
+		t.Fatalf("second page order=%s,%s, want %s,%s", secondPage.Items[0].ID, secondPage.Items[1].ID, traceB, traceC)
+	}
+	if secondPage.Items[0].RequestBody != "inline request b" || secondPage.Items[0].ResponseBody != "inline response b" {
+		t.Fatalf("second page inline body=%q/%q", secondPage.Items[0].RequestBody, secondPage.Items[0].ResponseBody)
+	}
+	if secondPage.NextCursor != "" {
+		t.Fatalf("second page next cursor=%q, want empty", secondPage.NextCursor)
 	}
 }
 
