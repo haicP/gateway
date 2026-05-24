@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/ongoingai/gateway/migrations"
 )
 
 type PostgresStore struct {
@@ -37,11 +38,12 @@ func NewPostgresStore(dsn string) (*PostgresStore, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	if err := store.ensureSchema(); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if err := store.ensureOptionalColumns(); err != nil {
+	if err := migrations.WithPostgresSchemaLock(context.Background(), db, func(_ *sql.Conn) error {
+		if err := store.ensureSchema(); err != nil {
+			return err
+		}
+		return store.ensureOptionalColumns()
+	}); err != nil {
 		_ = db.Close()
 		return nil, err
 	}

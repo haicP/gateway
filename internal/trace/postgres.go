@@ -1591,6 +1591,12 @@ func (s *PostgresStore) ensureSchema() error {
 }
 
 func (s *PostgresStore) ensureOptionalColumns() error {
+	return migrations.WithPostgresSchemaLock(context.Background(), s.db, func(_ *sql.Conn) error {
+		return s.ensureOptionalColumnsLocked()
+	})
+}
+
+func (s *PostgresStore) ensureOptionalColumnsLocked() error {
 	exists, err := s.hasTracesTable()
 	if err != nil {
 		return err

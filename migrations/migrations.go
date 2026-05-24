@@ -9,6 +9,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"time"
 )
 
 const (
@@ -20,6 +21,14 @@ const (
 
 //go:embed sqlite/*.sql postgres/*.sql
 var embedded embed.FS
+
+const postgresSchemaAdvisoryLockKey int64 = 8067396491
+
+type migrationDB interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
+}
 
 // Apply runs all embedded migrations for the selected driver in lexicographic order.
 // Each migration is applied exactly once and tracked in schema_migrations.
@@ -37,15 +46,46 @@ func Apply(ctx context.Context, db *sql.DB, driver string) error {
 	}
 
 	if driver == DriverPostgres {
-		// Serialize concurrent migration runs to prevent races on DDL
-		// statements like CREATE TABLE IF NOT EXISTS which can conflict
-		// on implicit composite type creation in pg_type.
-		if _, err := db.ExecContext(ctx, "SELECT pg_advisory_lock(8067396491); -- ongoingai_migrations"); err != nil {
-			return fmt.Errorf("acquire migration advisory lock: %w", err)
-		}
-		defer db.ExecContext(ctx, "SELECT pg_advisory_unlock(8067396491)") //nolint:errcheck
+		return WithPostgresSchemaLock(ctx, db, func(conn *sql.Conn) error {
+			return apply(ctx, conn, driver)
+		})
 	}
 
+	return apply(ctx, db, driver)
+}
+
+// WithPostgresSchemaLock serializes Postgres schema changes across packages and
+// processes using one session-bound advisory lock.
+func WithPostgresSchemaLock(ctx context.Context, db *sql.DB, fn func(conn *sql.Conn) error) error {
+	if db == nil {
+		return fmt.Errorf("database is required")
+	}
+	if fn == nil {
+		return fmt.Errorf("postgres schema lock callback is required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("open postgres schema lock connection: %w", err)
+	}
+	defer conn.Close() //nolint:errcheck
+
+	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1); -- ongoingai_schema", postgresSchemaAdvisoryLockKey); err != nil {
+		return fmt.Errorf("acquire postgres schema advisory lock: %w", err)
+	}
+	defer func() {
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = conn.ExecContext(unlockCtx, "SELECT pg_advisory_unlock($1)", postgresSchemaAdvisoryLockKey)
+	}()
+
+	return fn(conn)
+}
+
+func apply(ctx context.Context, db migrationDB, driver string) error {
 	if err := ensureMigrationsTable(ctx, db, driver); err != nil {
 		return err
 	}
@@ -75,7 +115,7 @@ func Apply(ctx context.Context, db *sql.DB, driver string) error {
 	return nil
 }
 
-func ensureMigrationsTable(ctx context.Context, db *sql.DB, driver string) error {
+func ensureMigrationsTable(ctx context.Context, db migrationDB, driver string) error {
 	var ddl string
 	switch driver {
 	case DriverSQLite:
@@ -101,7 +141,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 	return nil
 }
 
-func applyMigration(ctx context.Context, db *sql.DB, driver, name, statement string) error {
+func applyMigration(ctx context.Context, db migrationDB, driver, name, statement string) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
