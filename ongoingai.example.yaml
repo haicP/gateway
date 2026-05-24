@@ -8,12 +8,9 @@ storage:
   # dsn: postgres://user:password@localhost:5432/ongoingai?sslmode=disable
 
 providers:
-  openai:
+  llm:
     upstream: https://api.openai.com
-    prefix: /openai
-  anthropic:
-    upstream: https://api.anthropic.com
-    prefix: /anthropic
+    prefix: /llm
 
 tracing:
   capture_bodies: false

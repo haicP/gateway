@@ -23,8 +23,8 @@ Most teams deploy one gateway per environment and only change client base URLs.
 Application request payloads and SDK calls stay the same.
 
 ```bash filename="Environment example"
-export OPENAI_BASE_URL=http://localhost:8080/openai/v1
-export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
+export OPENAI_BASE_URL=http://localhost:8080/llm/v1
+export ANTHROPIC_BASE_URL=http://localhost:8080/llm
 ```
 
 ## Typical outcomes
@@ -39,7 +39,7 @@ Use OngoingAI Gateway when you need to:
 ## How request handling works
 
 1. Your client sends a provider request to a gateway route such as
-   `/openai/v1/chat/completions` or `/anthropic/v1/messages`.
+   `/llm/v1/chat/completions` or `/llm/v1/messages`.
 2. If gateway auth is enabled, your client also sends
    `X-OngoingAI-Gateway-Key`.
 3. The gateway validates access, tenant scope, and limits.

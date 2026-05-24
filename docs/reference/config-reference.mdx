@@ -35,12 +35,9 @@ storage:
   dsn: ""
 
 providers:
-  openai:
+  llm:
     upstream: https://api.openai.com
-    prefix: /openai
-  anthropic:
-    upstream: https://api.anthropic.com
-    prefix: /anthropic
+    prefix: /llm
 
 tracing:
   capture_bodies: false
@@ -143,19 +140,20 @@ Treat this baseline as a starting point. Most production deployments adjust
 
 ### `providers`
 
-`providers.openai` and `providers.anthropic` share the same schema.
+Each entry under `providers` uses the same schema. The default route is
+`providers.llm`.
 
 | Field | Type | Default | Required | Notes |
 | --- | --- | --- | --- | --- |
-| `providers.<provider>.upstream` | string | OpenAI: `https://api.openai.com` Anthropic: `https://api.anthropic.com` | Yes | Must include scheme and host. |
-| `providers.<provider>.prefix` | string | OpenAI: `/openai` Anthropic: `/anthropic` | Yes | Must start with `/`. Used for proxy path matching. |
+| `providers.<provider>.upstream` | string | `https://api.openai.com` for `llm` | Yes | Must include scheme and host. |
+| `providers.<provider>.prefix` | string | `/llm` for `llm` | Yes | Must start with `/`. Used for proxy path matching. |
 
 ### `tracing`
 
 | Field | Type | Default | Required | Notes |
 | --- | --- | --- | --- | --- |
 | `tracing.capture_bodies` | bool | `false` | No | If `true`, gateway stores captured request and response bodies after PII processing. |
-| `tracing.body_max_size` | int | `1048576` | No | Max captured bytes per request and response body. If set to `0` or a negative value, runtime falls back to `1048576`. |
+| `tracing.body_max_size` | int | `1048576` | No | Max captured bytes per request and response body. Set to `0` or a negative value to capture without an application-level truncation limit. |
 
 ### `observability`
 
@@ -168,7 +166,7 @@ Treat this baseline as a starting point. Most production deployments adjust
 | `observability.otel.traces_enabled` | bool | `true` | Conditional | At least one of `traces_enabled` or `metrics_enabled` must be `true` when enabled. |
 | `observability.otel.metrics_enabled` | bool | `true` | Conditional | At least one of `traces_enabled`, `metrics_enabled`, or `prometheus_enabled` must be `true` when enabled. |
 | `observability.otel.prometheus_enabled` | bool | `false` | No | Enables native Prometheus scrape endpoint. Can be combined with OTLP push metrics. |
-| `observability.otel.prometheus_path` | string | `/metrics` | No | Path for the Prometheus scrape endpoint. Must start with `/` and must not overlap with `/api`, `/openai`, or `/anthropic`. |
+| `observability.otel.prometheus_path` | string | `/metrics` | No | Path for the Prometheus scrape endpoint. Must start with `/` and must not overlap with `/api` or configured provider prefixes such as `/llm`. |
 | `observability.otel.sampling_ratio` | float64 | `1.0` | No | Trace sampling ratio in range `0.0` to `1.0` (parent-based). |
 | `observability.otel.export_timeout_ms` | int | `3000` | No | OTLP export timeout in milliseconds; must be `> 0`. |
 | `observability.otel.metric_export_interval_ms` | int | `10000` | No | Periodic metric export interval in milliseconds; must be `> 0`. |
@@ -198,8 +196,9 @@ Validation:
   `redact_upstream`, `block`.
 - All listed modes are supported in this release.
 - In `redact_upstream` and `block`, provider-route request bodies are inspected
-  within `tracing.body_max_size` and fail closed on policy-evaluation
-  uncertainty.
+  synchronously and fail closed on policy-evaluation uncertainty. When
+  `tracing.body_max_size<=0`, guardrail inspection still uses a conservative
+  1MB cap.
 - `pii.scopes[].match` must include at least one of: `org_id`, `workspace_id`,
   `key_id`, `provider`, `route_prefix`.
 - `pii.scopes[].match.route_prefix` must start with `/` when set.
@@ -262,8 +261,7 @@ The following fields support env var overrides:
 | `storage.driver` | `ONGOINGAI_STORAGE_DRIVER` |
 | `storage.path` | `ONGOINGAI_STORAGE_PATH` |
 | `storage.dsn` | `ONGOINGAI_STORAGE_DSN` |
-| `providers.openai.upstream` | `ONGOINGAI_OPENAI_UPSTREAM` |
-| `providers.anthropic.upstream` | `ONGOINGAI_ANTHROPIC_UPSTREAM` |
+| `providers.llm.upstream` | `ONGOINGAI_LLM_UPSTREAM` |
 | `tracing.capture_bodies` | `ONGOINGAI_CAPTURE_BODIES` |
 | `tracing.body_max_size` | `ONGOINGAI_BODY_MAX_SIZE` |
 | `observability.otel.enabled` | `OTEL_SDK_DISABLED` (inverse: `false` enables SDK) |
@@ -303,12 +301,9 @@ storage:
   path: ./data/ongoingai.db
 
 providers:
-  openai:
+  llm:
     upstream: https://api.openai.com
-    prefix: /openai
-  anthropic:
-    upstream: https://api.anthropic.com
-    prefix: /anthropic
+    prefix: /llm
 
 tracing:
   capture_bodies: false
@@ -327,12 +322,9 @@ storage:
   dsn: POSTGRES_DSN
 
 providers:
-  openai:
+  llm:
     upstream: https://api.openai.com
-    prefix: /openai
-  anthropic:
-    upstream: https://api.anthropic.com
-    prefix: /anthropic
+    prefix: /llm
 
 tracing:
   capture_bodies: true
@@ -400,7 +392,7 @@ You should see `config is valid: ongoingai.yaml` when validation succeeds.
 
 - Symptom: Validation fails for provider settings.
 - Cause: Provider prefix does not start with `/`.
-- Fix: Use values like `/openai` and `/anthropic`.
+- Fix: Use values like `/llm`.
 
 ### `providers.<provider>.upstream must include scheme and host`
 

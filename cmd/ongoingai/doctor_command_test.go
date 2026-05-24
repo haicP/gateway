@@ -63,7 +63,7 @@ func TestRunDoctorFailsWhenProviderPrefixOverlapsAPI(t *testing.T) {
 	t.Parallel()
 
 	configPath := writeDoctorTestConfig(t, doctorTestConfigOptions{
-		openAIPrefix: "/api",
+		llmPrefix: "/api",
 	})
 
 	var stdout bytes.Buffer
@@ -73,8 +73,8 @@ func TestRunDoctorFailsWhenProviderPrefixOverlapsAPI(t *testing.T) {
 		t.Fatalf("runDoctor() code=%d, want 1", code)
 	}
 	body := stdout.String()
-	if !strings.Contains(body, "[FAIL] route_wiring") {
-		t.Fatalf("stdout=%q, want route wiring failure", body)
+	if !strings.Contains(body, "[FAIL] config") {
+		t.Fatalf("stdout=%q, want config failure", body)
 	}
 	if !strings.Contains(body, "must not overlap with /api routes") {
 		t.Fatalf("stdout=%q, want route overlap detail", body)
@@ -190,23 +190,18 @@ func TestRunDoctorRejectsPositionalArguments(t *testing.T) {
 }
 
 type doctorTestConfigOptions struct {
-	openAIPrefix    string
-	anthropicPrefix string
-	authEnabled     bool
-	includeKey      bool
-	authHeader      string
+	llmPrefix   string
+	authEnabled bool
+	includeKey  bool
+	authHeader  string
 }
 
 func writeDoctorTestConfig(t *testing.T, options doctorTestConfigOptions) string {
 	t.Helper()
 
-	openAIPrefix := options.openAIPrefix
-	if strings.TrimSpace(openAIPrefix) == "" {
-		openAIPrefix = "/openai"
-	}
-	anthropicPrefix := options.anthropicPrefix
-	if strings.TrimSpace(anthropicPrefix) == "" {
-		anthropicPrefix = "/anthropic"
+	llmPrefix := options.llmPrefix
+	if strings.TrimSpace(llmPrefix) == "" {
+		llmPrefix = "/llm"
 	}
 	authHeader := strings.TrimSpace(options.authHeader)
 	if authHeader == "" {
@@ -221,16 +216,13 @@ func writeDoctorTestConfig(t *testing.T, options doctorTestConfigOptions) string
   driver: sqlite
   path: %s
 providers:
-  openai:
+  llm:
     upstream: https://api.openai.com
-    prefix: %s
-  anthropic:
-    upstream: https://api.anthropic.com
     prefix: %s
 auth:
   enabled: %t
   header: %s
-`, dbPath, openAIPrefix, anthropicPrefix, options.authEnabled, authHeader)
+`, dbPath, llmPrefix, options.authEnabled, authHeader)
 	if options.includeKey {
 		body += `  keys:
     - id: key-dev

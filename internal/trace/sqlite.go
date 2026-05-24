@@ -307,7 +307,7 @@ func isSQLiteBusyError(err error) bool {
 	return strings.Contains(value, "sqlite_busy") || strings.Contains(value, "database is locked")
 }
 
-const traceSelectColumns = `
+const traceDetailSelectColumns = `
 id,
 trace_group_id,
 org_id,
@@ -332,10 +332,37 @@ api_key_hash,
 estimated_cost_usd,
 metadata,
 CAST(created_at AS TEXT)
-`
+	`
+
+const traceSummarySelectColumns = `
+id,
+trace_group_id,
+org_id,
+workspace_id,
+CAST(timestamp AS TEXT),
+provider,
+model,
+request_method,
+request_path,
+request_headers,
+'' AS request_body,
+response_status,
+response_headers,
+'' AS response_body,
+input_tokens,
+output_tokens,
+total_tokens,
+latency_ms,
+time_to_first_token_ms,
+time_to_first_token_us,
+api_key_hash,
+estimated_cost_usd,
+metadata,
+CAST(created_at AS TEXT)
+	`
 
 func (s *SQLiteStore) GetTrace(ctx context.Context, id string) (*Trace, error) {
-	row := s.db.QueryRowContext(ctx, "SELECT "+traceSelectColumns+" FROM traces WHERE id = ? LIMIT 1", id)
+	row := s.db.QueryRowContext(ctx, "SELECT "+traceDetailSelectColumns+" FROM traces WHERE id = ? LIMIT 1", id)
 	traceRow, err := scanTraceRow(row)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -361,7 +388,7 @@ func (s *SQLiteStore) QueryTraces(ctx context.Context, filter TraceFilter) (*Tra
 	}
 	args = append(args, limit+1)
 
-	query := "SELECT " + traceSelectColumns + " FROM traces WHERE " + whereSQL + " ORDER BY created_at DESC, id DESC LIMIT ?"
+	query := "SELECT " + traceSummarySelectColumns + " FROM traces WHERE " + whereSQL + " ORDER BY created_at DESC, id DESC LIMIT ?"
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query traces: %w", err)

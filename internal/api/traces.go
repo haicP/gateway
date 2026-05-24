@@ -624,6 +624,12 @@ func handleTraceReplay(w http.ResponseWriter, r *http.Request, store trace.Trace
 	}
 
 	targetTrace := replayItems[targetIndex]
+	if fullTarget, err := store.GetTrace(r.Context(), targetTrace.ID); err == nil && traceVisibleInTenantScope(r, fullTarget) {
+		targetTrace = fullTarget
+	} else if err != nil && !errors.Is(err, trace.ErrNotFound) {
+		writeError(w, http.StatusInternalServerError, "failed to read target trace")
+		return
+	}
 	targetMetadata := decodeJSONField(targetTrace.Metadata)
 	targetLineage := buildTraceLineage(targetTrace, targetMetadata, true)
 	if targetLineage == nil {

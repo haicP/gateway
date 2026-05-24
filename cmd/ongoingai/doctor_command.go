@@ -14,7 +14,6 @@ import (
 
 	"github.com/ongoingai/gateway/internal/auth"
 	"github.com/ongoingai/gateway/internal/config"
-	"github.com/ongoingai/gateway/internal/pathutil"
 	"github.com/ongoingai/gateway/internal/proxy"
 	"github.com/ongoingai/gateway/internal/trace"
 )
@@ -182,33 +181,8 @@ func runDoctorStorageCheck(cfg config.Config) doctorCheck {
 func runDoctorRouteCheck(cfg config.Config) doctorCheck {
 	check := doctorCheck{Name: "route_wiring"}
 
-	openAIPrefix := pathutil.NormalizePrefix(cfg.Providers.OpenAI.Prefix)
-	anthropicPrefix := pathutil.NormalizePrefix(cfg.Providers.Anthropic.Prefix)
-	apiPrefix := "/api"
-
-	if openAIPrefix == "/" || anthropicPrefix == "/" {
-		check.Status = doctorStatusFail
-		check.Summary = "provider prefixes must not be root ('/')"
-		check.Details = []string{fmt.Sprintf("openai=%q anthropic=%q", openAIPrefix, anthropicPrefix)}
-		return check
-	}
-	if prefixesOverlap(openAIPrefix, anthropicPrefix) {
-		check.Status = doctorStatusFail
-		check.Summary = "provider route prefixes overlap"
-		check.Details = []string{fmt.Sprintf("openai=%q anthropic=%q", openAIPrefix, anthropicPrefix)}
-		return check
-	}
-	if prefixesOverlap(openAIPrefix, apiPrefix) || prefixesOverlap(anthropicPrefix, apiPrefix) {
-		check.Status = doctorStatusFail
-		check.Summary = "provider prefixes must not overlap with /api routes"
-		check.Details = []string{fmt.Sprintf("openai=%q anthropic=%q api=%q", openAIPrefix, anthropicPrefix, apiPrefix)}
-		return check
-	}
-
-	_, err := proxy.NewHandlerWithOptions([]proxy.Route{
-		{Prefix: cfg.Providers.OpenAI.Prefix, Upstream: cfg.Providers.OpenAI.Upstream},
-		{Prefix: cfg.Providers.Anthropic.Prefix, Upstream: cfg.Providers.Anthropic.Upstream},
-	}, nil, http.NotFoundHandler(), proxy.HandlerOptions{})
+	routes := proxyRoutesFromConfig(cfg)
+	_, err := proxy.NewHandlerWithOptions(routes, nil, http.NotFoundHandler(), proxy.HandlerOptions{})
 	if err != nil {
 		check.Status = doctorStatusFail
 		check.Summary = "failed to build proxy handler with configured routes"
@@ -218,10 +192,12 @@ func runDoctorRouteCheck(cfg config.Config) doctorCheck {
 
 	check.Status = doctorStatusPass
 	check.Summary = "provider and API route wiring looks valid"
-	check.Details = []string{
-		fmt.Sprintf("openai: %s -> %s", openAIPrefix, strings.TrimSpace(cfg.Providers.OpenAI.Upstream)),
-		fmt.Sprintf("anthropic: %s -> %s", anthropicPrefix, strings.TrimSpace(cfg.Providers.Anthropic.Upstream)),
-		"api routes: /api/*",
+	check.Details = append(configuredProviderSummaries(cfg),
+		"api:/api/*",
+	)
+	if len(routes) == 0 {
+		check.Status = doctorStatusFail
+		check.Summary = "no provider routes configured"
 	}
 	return check
 }
@@ -313,12 +289,6 @@ func countProtectedAuthorizationRules(rules []auth.AuthorizationRule) int {
 		}
 	}
 	return count
-}
-
-func prefixesOverlap(left, right string) bool {
-	left = pathutil.NormalizePrefix(left)
-	right = pathutil.NormalizePrefix(right)
-	return pathutil.HasPathPrefix(left, right) || pathutil.HasPathPrefix(right, left)
 }
 
 func doctorOverallStatus(checks []doctorCheck) string {

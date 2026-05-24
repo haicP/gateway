@@ -36,6 +36,7 @@ const (
 	lineageRunHeader              = "X-OngoingAI-Run-ID"
 	lineageParentCheckpointHeader = "X-OngoingAI-Parent-Checkpoint-ID"
 	lineageCheckpointSeqHeader    = "X-OngoingAI-Checkpoint-Seq"
+	metadataParseMaxSize          = 1 << 20
 )
 
 type redactionSummary struct {
@@ -119,11 +120,20 @@ func buildTraceRecord(cfg config.Config, registry *providers.Registry, exchange 
 	responseBody := ""
 	redactionDroppedBodies := false
 	redactionTruncated := false
+	storageRedactionSkipped := false
 	if cfg.Tracing.CaptureBodies {
-		requestBody = string(exchange.RequestBody)
-		responseBody = string(exchange.ResponseBody)
+		largeBodySpool := exchange.RequestBodyPath != "" || exchange.ResponseBodyPath != ""
+		if !largeBodySpool {
+			requestBody = string(exchange.RequestBody)
+			responseBody = string(exchange.ResponseBody)
+		}
 
-		if piiMode != config.PIIModeOff {
+		if largeBodySpool && piiMode != config.PIIModeOff {
+			storageRedactionSkipped = true
+			if exchange.RequestBodyTruncated || exchange.ResponseBodyTruncated {
+				redactionTruncated = true
+			}
+		} else if piiMode != config.PIIModeOff {
 			var err error
 
 			if piiPolicy.Stages.RequestBody {
@@ -196,6 +206,11 @@ func buildTraceRecord(cfg config.Config, registry *providers.Registry, exchange 
 		metadata["redaction_storage_drop"] = true
 		metadata["redaction_failure_semantics"] = "storage_drop_continue_proxy"
 	}
+	if storageRedactionSkipped {
+		metadata["body_pii_status"] = "skipped_large_body"
+		metadata["redaction_storage_skipped"] = true
+		metadata["redaction_skip_reason"] = "spooled_body"
+	}
 	if last4 != "" {
 		metadata["api_key_last4"] = last4
 	}
@@ -222,31 +237,39 @@ func buildTraceRecord(cfg config.Config, registry *providers.Registry, exchange 
 	timeToFirstTokenUS, timeToFirstTokenMS := normalizeTTFT(exchange.TimeToFirstTokenUS, exchange.TimeToFirstTokenMS)
 
 	return &trace.Trace{
-		ID:                 traceID,
-		TraceGroupID:       lineage.groupID,
-		Timestamp:          now,
-		OrgID:              nonEmpty(exchange.GatewayOrgID, "default"),
-		WorkspaceID:        nonEmpty(exchange.GatewayWorkspaceID, "default"),
-		GatewayKeyID:       exchange.GatewayKeyID,
-		Provider:           provider,
-		Model:              nonEmpty(model, "unknown"),
-		RequestMethod:      nonEmpty(exchange.Method, "UNKNOWN"),
-		RequestPath:        nonEmpty(exchange.Path, "/"),
-		RequestHeaders:     headersToJSON(requestHeaders),
-		RequestBody:        requestBody,
-		ResponseStatus:     exchange.StatusCode,
-		ResponseHeaders:    headersToJSON(responseHeaders),
-		ResponseBody:       responseBody,
-		InputTokens:        inputTokens,
-		OutputTokens:       outputTokens,
-		TotalTokens:        totalTokens,
-		LatencyMS:          exchange.DurationMS,
-		TimeToFirstTokenMS: timeToFirstTokenMS,
-		TimeToFirstTokenUS: timeToFirstTokenUS,
-		APIKeyHash:         apiKeyHash,
-		EstimatedCostUSD:   estimatedCostUSD,
-		Metadata:           string(metadataJSON),
-		CreatedAt:          now,
+		ID:                    traceID,
+		TraceGroupID:          lineage.groupID,
+		Timestamp:             now,
+		OrgID:                 nonEmpty(exchange.GatewayOrgID, "default"),
+		WorkspaceID:           nonEmpty(exchange.GatewayWorkspaceID, "default"),
+		GatewayKeyID:          exchange.GatewayKeyID,
+		Provider:              provider,
+		Model:                 nonEmpty(model, "unknown"),
+		RequestMethod:         nonEmpty(exchange.Method, "UNKNOWN"),
+		RequestPath:           nonEmpty(exchange.Path, "/"),
+		RequestHeaders:        headersToJSON(requestHeaders),
+		RequestBody:           requestBody,
+		RequestBodyPath:       exchange.RequestBodyPath,
+		RequestBodyBytes:      exchange.RequestBodyBytes,
+		RequestBodySHA256:     exchange.RequestBodySHA256,
+		RequestBodyTruncated:  exchange.RequestBodyTruncated,
+		ResponseStatus:        exchange.StatusCode,
+		ResponseHeaders:       headersToJSON(responseHeaders),
+		ResponseBody:          responseBody,
+		ResponseBodyPath:      exchange.ResponseBodyPath,
+		ResponseBodyBytes:     exchange.ResponseBodyBytes,
+		ResponseBodySHA256:    exchange.ResponseBodySHA256,
+		ResponseBodyTruncated: exchange.ResponseBodyTruncated,
+		InputTokens:           inputTokens,
+		OutputTokens:          outputTokens,
+		TotalTokens:           totalTokens,
+		LatencyMS:             exchange.DurationMS,
+		TimeToFirstTokenMS:    timeToFirstTokenMS,
+		TimeToFirstTokenUS:    timeToFirstTokenUS,
+		APIKeyHash:            apiKeyHash,
+		EstimatedCostUSD:      estimatedCostUSD,
+		Metadata:              string(metadataJSON),
+		CreatedAt:             now,
 	}
 }
 
@@ -290,11 +313,10 @@ func normalizeTTFT(us, ms int64) (int64, int64) {
 }
 
 func detectProvider(cfg config.Config, path string) string {
-	if pathutil.HasPathPrefix(path, cfg.Providers.OpenAI.Prefix) {
-		return "openai"
-	}
-	if pathutil.HasPathPrefix(path, cfg.Providers.Anthropic.Prefix) {
-		return "anthropic"
+	for _, name := range sortedProviderNames(cfg.Providers) {
+		if pathutil.HasPathPrefix(path, cfg.Providers[name].Prefix) {
+			return name
+		}
 	}
 	return "unknown"
 }

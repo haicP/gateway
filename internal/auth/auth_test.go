@@ -8,6 +8,13 @@ import (
 	"testing"
 )
 
+func testProviderRoutes() []ProviderRoute {
+	return []ProviderRoute{
+		{Name: "openai", Prefix: "/openai"},
+		{Name: "anthropic", Prefix: "/anthropic"},
+	}
+}
+
 func TestNewAuthorizerRequiresKeysWhenEnabled(t *testing.T) {
 	t.Parallel()
 
@@ -228,9 +235,8 @@ func TestMiddlewareProtectsProxyAndPassesThroughProviderCredential(t *testing.T)
 	var seenGatewayHeader string
 	var seenIdentityKeyID string
 	handler := Middleware(authorizer, MiddlewareOptions{
-		APIPrefix:       "/api",
-		OpenAIPrefix:    "/openai",
-		AnthropicPrefix: "/anthropic",
+		APIPrefix: "/api",
+		Providers: testProviderRoutes(),
 	}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seenAuthHeader = r.Header.Get("Authorization")
 		seenGatewayHeader = r.Header.Get("X-OngoingAI-Gateway-Key")
@@ -282,9 +288,8 @@ func TestMiddlewareRejectsMissingProviderCredential(t *testing.T) {
 	}
 
 	handler := Middleware(authorizer, MiddlewareOptions{
-		APIPrefix:       "/api",
-		OpenAIPrefix:    "/openai",
-		AnthropicPrefix: "/anthropic",
+		APIPrefix: "/api",
+		Providers: testProviderRoutes(),
 	}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -297,6 +302,68 @@ func TestMiddlewareRejectsMissingProviderCredential(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status=%d, want %d (missing provider key)", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestMiddlewareAcceptsGenericProviderCredentials(t *testing.T) {
+	t.Parallel()
+
+	authorizer, err := NewAuthorizer(Options{
+		Enabled: true,
+		Keys: []KeyConfig{
+			{
+				ID:    "team-a-owner-1",
+				Token: "owner-token",
+				Team:  "team-a",
+				Role:  "owner",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAuthorizer() error: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		setup func(*http.Request)
+	}{
+		{
+			name: "gemini api key header",
+			setup: func(req *http.Request) {
+				req.Header.Set("X-Goog-API-Key", "AIza-test")
+			},
+		},
+		{
+			name: "gemini key query parameter",
+			setup: func(req *http.Request) {
+				query := req.URL.Query()
+				query.Set("key", "AIza-test")
+				req.URL.RawQuery = query.Encode()
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := Middleware(authorizer, MiddlewareOptions{
+				APIPrefix: "/api",
+				Providers: []ProviderRoute{
+					{Name: "llm", Prefix: "/llm"},
+				},
+			}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusAccepted)
+			}))
+
+			req := httptest.NewRequest(http.MethodPost, "/llm/v1beta/models/gemini-pro:generateContent", nil)
+			req.Header.Set("X-OngoingAI-Gateway-Key", "owner-token")
+			tt.setup(req)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("status=%d, want %d", rec.Code, http.StatusAccepted)
+			}
+		})
 	}
 }
 
@@ -319,9 +386,8 @@ func TestMiddlewareRequiresGatewayTokenInConfiguredHeader(t *testing.T) {
 	}
 
 	handler := Middleware(authorizer, MiddlewareOptions{
-		APIPrefix:       "/api",
-		OpenAIPrefix:    "/openai",
-		AnthropicPrefix: "/anthropic",
+		APIPrefix: "/api",
+		Providers: testProviderRoutes(),
 	}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 	}))
@@ -356,9 +422,8 @@ func TestMiddlewareBlocksProxyForViewer(t *testing.T) {
 	}
 
 	handler := Middleware(authorizer, MiddlewareOptions{
-		APIPrefix:       "/api",
-		OpenAIPrefix:    "/openai",
-		AnthropicPrefix: "/anthropic",
+		APIPrefix: "/api",
+		Providers: testProviderRoutes(),
 	}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -392,9 +457,8 @@ func TestMiddlewareAllowsAPIReadForViewerAndHealthWithoutAuth(t *testing.T) {
 	}
 
 	handler := Middleware(authorizer, MiddlewareOptions{
-		APIPrefix:       "/api",
-		OpenAIPrefix:    "/openai",
-		AnthropicPrefix: "/anthropic",
+		APIPrefix: "/api",
+		Providers: testProviderRoutes(),
 	}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -450,9 +514,8 @@ func TestMiddlewareRequiresGatewayKeyOnProtectedRoutes(t *testing.T) {
 	}
 
 	handler := Middleware(authorizer, MiddlewareOptions{
-		APIPrefix:       "/api",
-		OpenAIPrefix:    "/openai",
-		AnthropicPrefix: "/anthropic",
+		APIPrefix: "/api",
+		Providers: testProviderRoutes(),
 	}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -485,9 +548,8 @@ func TestMiddlewareDeniesUnmappedAPIActionByDefault(t *testing.T) {
 
 	var called bool
 	handler := Middleware(authorizer, MiddlewareOptions{
-		APIPrefix:       "/api",
-		OpenAIPrefix:    "/openai",
-		AnthropicPrefix: "/anthropic",
+		APIPrefix: "/api",
+		Providers: testProviderRoutes(),
 	}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
@@ -524,9 +586,8 @@ func TestMiddlewareAllowsPreflightWithoutAuth(t *testing.T) {
 	}
 
 	handler := Middleware(authorizer, MiddlewareOptions{
-		APIPrefix:       "/api",
-		OpenAIPrefix:    "/openai",
-		AnthropicPrefix: "/anthropic",
+		APIPrefix: "/api",
+		Providers: testProviderRoutes(),
 	}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -558,9 +619,8 @@ func TestMiddlewareAllowsTraceReplayAndForkWithAnalyticsPermission(t *testing.T)
 	}
 
 	handler := Middleware(authorizer, MiddlewareOptions{
-		APIPrefix:       "/api",
-		OpenAIPrefix:    "/openai",
-		AnthropicPrefix: "/anthropic",
+		APIPrefix: "/api",
+		Providers: testProviderRoutes(),
 	}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -588,9 +648,8 @@ func TestDynamicMiddlewareFailsClosedWhenResolverUnavailable(t *testing.T) {
 	handler := DynamicMiddleware(func(_ *http.Request) (*Authorizer, error) {
 		return nil, errors.New("key store unavailable")
 	}, MiddlewareOptions{
-		APIPrefix:       "/api",
-		OpenAIPrefix:    "/openai",
-		AnthropicPrefix: "/anthropic",
+		APIPrefix: "/api",
+		Providers: testProviderRoutes(),
 	}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -629,9 +688,8 @@ func TestMiddlewareReturns429WithLimitErrorCode(t *testing.T) {
 	}
 
 	handler := Middleware(authorizer, MiddlewareOptions{
-		APIPrefix:       "/api",
-		OpenAIPrefix:    "/openai",
-		AnthropicPrefix: "/anthropic",
+		APIPrefix: "/api",
+		Providers: testProviderRoutes(),
 		ProxyLimiter: func(_ *http.Request, _ *Identity) (*ProxyLimitResult, error) {
 			return &ProxyLimitResult{
 				Code:              "KEY_RATE_LIMIT_EXCEEDED",
@@ -688,9 +746,8 @@ func TestMiddlewareInvokesProxyUsageRecorderOnAuthorizedProxyRequest(t *testing.
 	var called bool
 	var seenKeyID string
 	handler := Middleware(authorizer, MiddlewareOptions{
-		APIPrefix:       "/api",
-		OpenAIPrefix:    "/openai",
-		AnthropicPrefix: "/anthropic",
+		APIPrefix: "/api",
+		Providers: testProviderRoutes(),
 		ProxyUsageRecorder: func(_ *http.Request, identity *Identity) {
 			called = true
 			if identity != nil {
@@ -740,9 +797,8 @@ func TestMiddlewareEmitsAuditEventOnPermissionDenied(t *testing.T) {
 	var seen AuditEvent
 	var called bool
 	handler := Middleware(authorizer, MiddlewareOptions{
-		APIPrefix:       "/api",
-		OpenAIPrefix:    "/openai",
-		AnthropicPrefix: "/anthropic",
+		APIPrefix: "/api",
+		Providers: testProviderRoutes(),
 		AuditRecorder: func(_ *http.Request, event AuditEvent) {
 			called = true
 			seen = event
@@ -796,9 +852,8 @@ func TestMiddlewareAuditEventIncludesResourceMetadata(t *testing.T) {
 
 	var seen AuditEvent
 	handler := Middleware(authorizer, MiddlewareOptions{
-		APIPrefix:       "/api",
-		OpenAIPrefix:    "/openai",
-		AnthropicPrefix: "/anthropic",
+		APIPrefix: "/api",
+		Providers: testProviderRoutes(),
 		AuditRecorder: func(_ *http.Request, event AuditEvent) {
 			seen = event
 		},

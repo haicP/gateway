@@ -37,7 +37,7 @@ Default header:
 
 | Permission | Meaning |
 | --- | --- |
-| `proxy:write` | Send requests through provider proxy routes (`/openai/*`, `/anthropic/*`). |
+| `proxy:write` | Send requests through configured provider proxy routes such as `/llm/*`. |
 | `analytics:read` | Read traces, diagnostics, and analytics APIs. |
 | `keys:manage` | List, create, rotate, and revoke gateway keys. |
 
@@ -63,7 +63,7 @@ Explicit `permissions` values on a key are additive.
 | `diagnostics` | `read` | `workspace` | `GET`, `HEAD` | `/api/diagnostics/trace-pipeline` | `analytics:read` |
 | `analytics` | `read` | `workspace` | `GET`, `HEAD` | `/api/analytics/*` | `analytics:read` |
 | `gateway_keys` | `manage` | `workspace` | `GET`, `POST`, `DELETE` | `/api/gateway-keys*` | `keys:manage` |
-| `proxy` | `forward` | `workspace` | `*` | `/openai/*`, `/anthropic/*` | `proxy:write` |
+| `proxy` | `forward` | `workspace` | `*` | configured provider prefixes, e.g. `/llm/*` | `proxy:write` |
 
 ## Authorization decision rules
 
@@ -163,7 +163,7 @@ On deny outcomes, middleware emits an audit event with:
 4. Verify viewer cannot proxy:
 
    ```bash filename="Terminal"
-   curl -i "http://localhost:8080/openai/v1/models" \
+   curl -i "http://localhost:8080/llm/v1/models" \
      -H "X-OngoingAI-Gateway-Key: VIEWER_KEY" \
      -H "Authorization: Bearer OPENAI_API_KEY"
    ```

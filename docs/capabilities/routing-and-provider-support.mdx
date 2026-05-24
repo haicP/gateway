@@ -1,6 +1,6 @@
 ---
 title: Routing and provider support
-description: Configure OpenAI and Anthropic route prefixes, customize upstream endpoints, and verify prefix-based proxy forwarding.
+description: Configure provider route prefixes, customize upstream endpoints, and verify prefix-based proxy forwarding.
 related:
   title: Next steps
   description: Continue with auth, tracing, and full configuration details.
@@ -15,11 +15,11 @@ It explains prefix matching, upstream forwarding, and validation steps.
 
 ## Routing behavior
 
-- Routes traffic by configured OpenAI and Anthropic path prefixes.
+- Routes traffic by configured provider path prefixes.
 - Forwards matched requests to provider upstream endpoints.
 - Strips the matched route prefix before forwarding upstream.
 - Leaves non-provider routes available for gateway APIs such as `/api/...`.
-- Supports OpenAI-compatible providers through `providers.openai.upstream`.
+- Supports OpenAI-compatible providers through `providers.llm.upstream`.
 
 ## Operational fit
 
@@ -29,7 +29,7 @@ It explains prefix matching, upstream forwarding, and validation steps.
 
 ## Matching and forwarding flow
 
-1. The gateway reads `providers.openai` and `providers.anthropic` from config.
+1. The gateway reads each entry under `providers` from config.
 2. Each configured prefix is normalized for matching.
 3. A request matches only when the path equals the prefix or starts with
    `<prefix>/`.
@@ -43,12 +43,9 @@ It explains prefix matching, upstream forwarding, and validation steps.
 
 ```yaml filename="ongoingai.yaml"
 providers:
-  openai:
+  llm:
     upstream: https://api.openai.com
-    prefix: /openai
-  anthropic:
-    upstream: https://api.anthropic.com
-    prefix: /anthropic
+    prefix: /llm
 ```
 
 Prefix values must start with `/`. Upstream values must include both scheme and
@@ -57,11 +54,9 @@ host.
 ## Routing patterns
 
 - Route OpenAI-compatible traffic through a compatible endpoint by setting
-  `providers.openai.upstream`.
-- Use environment-specific upstream hosts with
-  `ONGOINGAI_OPENAI_UPSTREAM` and `ONGOINGAI_ANTHROPIC_UPSTREAM`.
-- Place provider routes under a shared ingress path such as `/ai/openai` and
-  `/ai/anthropic`.
+  `providers.llm.upstream`.
+- Use environment-specific upstream hosts with `ONGOINGAI_LLM_UPSTREAM`.
+- Place the default provider route under a shared ingress path such as `/ai/llm`.
 - Keep provider prefixes distinct so one route does not shadow the other.
 
 ## Example route setups
@@ -70,24 +65,18 @@ host.
 
 ```yaml filename="ongoingai.yaml"
 providers:
-  openai:
+  llm:
     upstream: https://openai-compatible.example.com
-    prefix: /openai
-  anthropic:
-    upstream: https://api.anthropic.com
-    prefix: /anthropic
+    prefix: /llm
 ```
 
 ### Use nested prefixes behind one ingress path
 
 ```yaml filename="ongoingai.yaml"
 providers:
-  openai:
+  llm:
     upstream: https://api.openai.com
-    prefix: /ai/openai
-  anthropic:
-    upstream: https://api.anthropic.com
-    prefix: /ai/anthropic
+    prefix: /ai/llm
 ```
 
 After you change prefixes, run `eval "$(ongoingai shell-init)"` again so client
@@ -116,12 +105,12 @@ base URLs stay aligned.
 4. Send one request through each provider route.
 
    ```bash filename="Terminal"
-   curl http://localhost:8080/openai/v1/chat/completions \
+   curl http://localhost:8080/llm/v1/chat/completions \
      -H "Authorization: Bearer $OPENAI_API_KEY" \
      -H "Content-Type: application/json" \
      -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Reply with ok"}]}'
 
-   curl http://localhost:8080/anthropic/v1/messages \
+   curl http://localhost:8080/llm/v1/messages \
      -H "x-api-key: $ANTHROPIC_API_KEY" \
      -H "anthropic-version: 2023-06-01" \
      -H "content-type: application/json" \
@@ -168,7 +157,7 @@ You should see:
 - Symptom: `ongoingai config validate` reports provider errors.
 - Cause: Prefix is missing a leading `/`, or upstream is missing scheme or
   host.
-- Fix: Set valid values such as `prefix: /openai` and
+- Fix: Set valid values such as `prefix: /llm` and
   `upstream: https://api.openai.com`.
 
 ## Next steps

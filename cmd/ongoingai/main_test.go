@@ -31,8 +31,8 @@ func TestShouldCaptureTrace(t *testing.T) {
 		{path: "/api/traces", want: false},
 		{path: "/api", want: false},
 		{path: "/apiish", want: true},
-		{path: "/openai/v1/chat/completions", want: true},
-		{path: "/anthropic/v1/messages", want: true},
+		{path: "/llm/v1/chat/completions", want: true},
+		{path: "/llm/v1/messages", want: true},
 	}
 
 	for _, tt := range tests {
@@ -49,8 +49,7 @@ func TestConfiguredProviderSummaries(t *testing.T) {
 
 	got := configuredProviderSummaries(cfg)
 	want := []string{
-		"openai:/openai->https://api.openai.com",
-		"anthropic:/anthropic->https://api.anthropic.com",
+		"llm:/llm->https://api.openai.com",
 	}
 
 	if !reflect.DeepEqual(got, want) {
@@ -62,8 +61,7 @@ func TestConfiguredProviderSummariesSkipsIncompleteProviders(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.Default()
-	cfg.Providers.OpenAI.Prefix = ""
-	cfg.Providers.Anthropic.Upstream = ""
+	cfg.Providers["llm"] = config.ProviderConfig{}
 
 	got := configuredProviderSummaries(cfg)
 	if len(got) != 0 {
@@ -82,12 +80,9 @@ storage:
   driver: sqlite
   path: ./data/ongoingai.db
 providers:
-  openai:
+  llm:
     upstream: https://api.openai.com
-    prefix: /openai
-  anthropic:
-    upstream: https://api.anthropic.com
-    prefix: /anthropic
+    prefix: /llm
 `
 	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)

@@ -31,8 +31,7 @@ If you set a variable to an empty string, gateway ignores it.
 | `ONGOINGAI_STORAGE_DRIVER` | string | `storage.driver` | `ONGOINGAI_STORAGE_DRIVER=postgres` |
 | `ONGOINGAI_STORAGE_PATH` | string | `storage.path` | `ONGOINGAI_STORAGE_PATH=./data/ongoingai.db` |
 | `ONGOINGAI_STORAGE_DSN` | string | `storage.dsn` | `ONGOINGAI_STORAGE_DSN=postgres://user:pass@db:5432/ongoingai?sslmode=require` |
-| `ONGOINGAI_OPENAI_UPSTREAM` | string | `providers.openai.upstream` | `ONGOINGAI_OPENAI_UPSTREAM=https://api.openai.com` |
-| `ONGOINGAI_ANTHROPIC_UPSTREAM` | string | `providers.anthropic.upstream` | `ONGOINGAI_ANTHROPIC_UPSTREAM=https://api.anthropic.com` |
+| `ONGOINGAI_LLM_UPSTREAM` | string | `providers.llm.upstream` | `ONGOINGAI_LLM_UPSTREAM=https://api.openai.com` |
 | `ONGOINGAI_CAPTURE_BODIES` | bool (`ParseBool`) | `tracing.capture_bodies` | `ONGOINGAI_CAPTURE_BODIES=true` |
 | `ONGOINGAI_BODY_MAX_SIZE` | int (`Atoi`) | `tracing.body_max_size` | `ONGOINGAI_BODY_MAX_SIZE=262144` |
 | `OTEL_SDK_DISABLED` | bool (`ParseBool`) | `observability.otel.enabled` (inverse) | `OTEL_SDK_DISABLED=false` |
@@ -88,8 +87,8 @@ The following config areas do not support env var overrides in this release:
 Examples:
 - `ONGOINGAI_STORAGE_DRIVER=invalid` fails with:
   `storage.driver must be one of sqlite, postgres`.
-- `ONGOINGAI_OPENAI_UPSTREAM=api.openai.com` fails with:
-  `providers.openai.upstream must include scheme and host`.
+- `ONGOINGAI_LLM_UPSTREAM=api.openai.com` fails with:
+  `providers.llm.upstream must include scheme and host`.
 
 ## Examples
 

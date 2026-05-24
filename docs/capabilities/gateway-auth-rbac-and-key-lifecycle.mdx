@@ -47,7 +47,7 @@ in static and Postgres-backed modes.
    closed with `503`.
 
 Permission mapping:
-- `/openai/*` and `/anthropic/*`: `proxy:write`
+- `/llm/*`: `proxy:write`
 - `GET /api/traces` and `GET /api/traces/:id`: `analytics:read`
 - `GET /api/analytics/*`: `analytics:read`
 - `GET/POST/DELETE /api/gateway-keys*`: `keys:manage`
@@ -152,7 +152,7 @@ The create response includes the key `token`. Store that token securely.
 4. Check that viewer keys cannot proxy provider requests.
 
    ```bash filename="Terminal"
-   curl -i "http://localhost:8080/openai/v1/models" \
+   curl -i "http://localhost:8080/llm/v1/models" \
      -H "X-OngoingAI-Gateway-Key: GATEWAY_KEY_VIEWER" \
      -H "Authorization: Bearer OPENAI_API_KEY"
    ```

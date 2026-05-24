@@ -28,7 +28,7 @@ func TestPIIGuardrailMiddlewareRedactUpstreamRedactsRequestBody(t *testing.T) {
 	})
 
 	handler := piiGuardrailMiddleware(cfg, nil, next)
-	req := httptest.NewRequest(http.MethodPost, "/openai/v1/chat/completions", strings.NewReader(`{"email":"alice@example.com"}`))
+	req := httptest.NewRequest(http.MethodPost, "/llm/v1/chat/completions", strings.NewReader(`{"email":"alice@example.com"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -57,7 +57,7 @@ func TestPIIGuardrailMiddlewareBlockRejectsDetectedPII(t *testing.T) {
 	})
 
 	handler := piiGuardrailMiddleware(cfg, nil, next)
-	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", strings.NewReader(`{"phone":"415-555-1212"}`))
+	req := httptest.NewRequest(http.MethodPost, "/llm/v1/messages", strings.NewReader(`{"phone":"415-555-1212"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -90,7 +90,7 @@ func TestPIIGuardrailMiddlewareBlockAllowsCleanPayload(t *testing.T) {
 	})
 
 	handler := piiGuardrailMiddleware(cfg, nil, next)
-	req := httptest.NewRequest(http.MethodPost, "/openai/v1/chat/completions", strings.NewReader(`{"prompt":"hello"}`))
+	req := httptest.NewRequest(http.MethodPost, "/llm/v1/chat/completions", strings.NewReader(`{"prompt":"hello"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -117,7 +117,7 @@ func TestPIIGuardrailMiddlewareFailsClosedWhenRequestBodyExceedsInspectionLimit(
 	})
 
 	handler := piiGuardrailMiddleware(cfg, nil, next)
-	req := httptest.NewRequest(http.MethodPost, "/openai/v1/chat/completions", strings.NewReader(`{"email":"alice@example.com"}`))
+	req := httptest.NewRequest(http.MethodPost, "/llm/v1/chat/completions", strings.NewReader(`{"email":"alice@example.com"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -147,7 +147,7 @@ func TestPIIGuardrailMiddlewareBlockFailsClosedOnPolicyUncertainty(t *testing.T)
 	})
 
 	handler := piiGuardrailMiddleware(cfg, nil, next)
-	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", strings.NewReader(`{"phone":"415-555-1212"}`))
+	req := httptest.NewRequest(http.MethodPost, "/llm/v1/messages", strings.NewReader(`{"phone":"415-555-1212"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -198,8 +198,8 @@ func TestPIIGuardrailMiddlewareAppliesScopedPolicyByWorkspaceProviderAndRoute(t 
 		{
 			Match: config.PIIScopeMatchConfig{
 				WorkspaceID: "workspace-strict",
-				Provider:    "openai",
-				RoutePrefix: "/openai/v1/chat",
+				Provider:    "llm",
+				RoutePrefix: "/llm/v1/chat",
 			},
 			Mode: config.PIIModeBlock,
 		},
@@ -212,7 +212,7 @@ func TestPIIGuardrailMiddlewareAppliesScopedPolicyByWorkspaceProviderAndRoute(t 
 	})
 
 	handler := piiGuardrailMiddleware(cfg, nil, next)
-	req := httptest.NewRequest(http.MethodPost, "/openai/v1/chat/completions", strings.NewReader(`{"email":"alice@example.com"}`))
+	req := httptest.NewRequest(http.MethodPost, "/llm/v1/chat/completions", strings.NewReader(`{"email":"alice@example.com"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(auth.WithIdentity(req.Context(), &auth.Identity{
 		OrgID:       "org-default",

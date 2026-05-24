@@ -58,15 +58,15 @@ You will start the gateway, proxy one request, and confirm trace capture.
    ```
 
    You should see these environment variables in your shell:
-   - `OPENAI_BASE_URL=http://localhost:8080/openai/v1`
-   - `ANTHROPIC_BASE_URL=http://localhost:8080/anthropic`
+   - `OPENAI_BASE_URL=http://localhost:8080/llm/v1`
+   - `ANTHROPIC_BASE_URL=http://localhost:8080/llm`
 
 4. Send one request through the gateway from Terminal B.
 
    If you use OpenAI-compatible traffic, run:
 
    ```bash filename="Terminal B"
-   curl http://localhost:8080/openai/v1/chat/completions \
+   curl http://localhost:8080/llm/v1/chat/completions \
      -H "Authorization: Bearer $OPENAI_API_KEY" \
      -H "Content-Type: application/json" \
      -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Reply with ok"}]}'
@@ -75,7 +75,7 @@ You will start the gateway, proxy one request, and confirm trace capture.
    If you use Anthropic traffic, run:
 
    ```bash filename="Terminal B"
-   curl http://localhost:8080/anthropic/v1/messages \
+   curl http://localhost:8080/llm/v1/messages \
      -H "x-api-key: $ANTHROPIC_API_KEY" \
      -H "anthropic-version: 2023-06-01" \
      -H "content-type: application/json" \
@@ -113,7 +113,7 @@ You will start the gateway, proxy one request, and confirm trace capture.
 Run one request and fetch one trace:
 
 ```bash filename="Terminal B"
-curl http://localhost:8080/openai/v1/chat/completions \
+curl http://localhost:8080/llm/v1/chat/completions \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"ping"}]}'
@@ -126,12 +126,12 @@ curl "http://localhost:8080/api/traces?limit=1"
 Run requests across two providers, then generate an offline report:
 
 ```bash filename="Terminal B"
-curl http://localhost:8080/openai/v1/chat/completions \
+curl http://localhost:8080/llm/v1/chat/completions \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Summarize this in one line."}]}'
 
-curl http://localhost:8080/anthropic/v1/messages \
+curl http://localhost:8080/llm/v1/messages \
   -H "x-api-key: $ANTHROPIC_API_KEY" \
   -H "anthropic-version: 2023-06-01" \
   -H "content-type: application/json" \
@@ -173,7 +173,7 @@ chain checkpoints.
 - Symptom: `/api/traces` returns an empty list.
 - Cause: The request did not pass through a provider route, or the request failed
   before provider forwarding.
-- Fix: Send a request to `/openai/...` or `/anthropic/...`, then query
+- Fix: Send a request to `/llm/...`, then query
   `/api/traces?limit=10`.
 
 ## Next steps

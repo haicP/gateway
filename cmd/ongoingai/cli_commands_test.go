@@ -16,8 +16,8 @@ func TestShellInitScriptUsesLocalhostForWildcardHost(t *testing.T) {
 	cfg.Server.Port = 8080
 
 	got := shellInitScript(cfg)
-	want := "export OPENAI_BASE_URL=http://localhost:8080/openai/v1\n" +
-		"export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic\n"
+	want := "export OPENAI_BASE_URL=http://localhost:8080/llm/v1\n" +
+		"export ANTHROPIC_BASE_URL=http://localhost:8080/llm\n"
 	if got != want {
 		t.Fatalf("shellInitScript()=\n%s\nwant:\n%s", got, want)
 	}
@@ -29,12 +29,14 @@ func TestShellInitScriptUsesConfiguredHostAndPrefixes(t *testing.T) {
 	cfg := config.Default()
 	cfg.Server.Host = "127.0.0.1"
 	cfg.Server.Port = 9090
-	cfg.Providers.OpenAI.Prefix = "/gateway/openai"
-	cfg.Providers.Anthropic.Prefix = "anthropic-api"
+	cfg.Providers["llm"] = config.ProviderConfig{
+		Upstream: "https://api.openai.com",
+		Prefix:   "/gateway/llm",
+	}
 
 	got := shellInitScript(cfg)
-	want := "export OPENAI_BASE_URL=http://127.0.0.1:9090/gateway/openai/v1\n" +
-		"export ANTHROPIC_BASE_URL=http://127.0.0.1:9090/anthropic-api\n"
+	want := "export OPENAI_BASE_URL=http://127.0.0.1:9090/gateway/llm/v1\n" +
+		"export ANTHROPIC_BASE_URL=http://127.0.0.1:9090/gateway/llm\n"
 	if got != want {
 		t.Fatalf("shellInitScript()=\n%s\nwant:\n%s", got, want)
 	}
@@ -49,18 +51,18 @@ func TestGatewayCommandEnvOverridesProviderURLs(t *testing.T) {
 
 	env := gatewayCommandEnv(cfg, []string{
 		"FOO=bar",
-		"OPENAI_BASE_URL=http://old.local/openai/v1",
-		"ANTHROPIC_BASE_URL=http://old.local/anthropic",
+		"OPENAI_BASE_URL=http://old.local/llm/v1",
+		"ANTHROPIC_BASE_URL=http://old.local/llm",
 	})
 	got := toEnvMap(env)
 
 	if got["FOO"] != "bar" {
 		t.Fatalf("FOO=%q, want bar", got["FOO"])
 	}
-	if got["OPENAI_BASE_URL"] != "http://localhost:8080/openai/v1" {
+	if got["OPENAI_BASE_URL"] != "http://localhost:8080/llm/v1" {
 		t.Fatalf("OPENAI_BASE_URL=%q", got["OPENAI_BASE_URL"])
 	}
-	if got["ANTHROPIC_BASE_URL"] != "http://localhost:8080/anthropic" {
+	if got["ANTHROPIC_BASE_URL"] != "http://localhost:8080/llm" {
 		t.Fatalf("ANTHROPIC_BASE_URL=%q", got["ANTHROPIC_BASE_URL"])
 	}
 }
@@ -80,7 +82,7 @@ func TestRunWrappedCommandSetsProviderURLs(t *testing.T) {
 	}
 
 	got := stdout.String()
-	want := "http://127.0.0.1:8088/openai/v1|http://127.0.0.1:8088/anthropic"
+	want := "http://127.0.0.1:8088/llm/v1|http://127.0.0.1:8088/llm"
 	if got != want {
 		t.Fatalf("stdout=%q, want %q", got, want)
 	}

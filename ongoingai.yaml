@@ -1,73 +1,113 @@
+# 网关进程的 HTTP 服务配置。
 server:
+  # 监听地址。容器部署或需要局域网访问时使用 0.0.0.0。
   host: 0.0.0.0
+  # 监听端口。容器内也是使用这个端口。
   port: 8080
 
+# 追踪与配置数据存储。SQLite 适合单机默认部署，Postgres 适合团队或多实例部署。
 storage:
+  # 存储后端，可选值：sqlite 或 postgres。
   driver: sqlite
+  # SQLite 数据库文件路径。storage.driver=postgres 时忽略。
   path: ./data/ongoingai.db
+  # Postgres 连接串。storage.driver=postgres 时必填。
   # dsn: postgres://user:password@localhost:5432/ongoingai?sslmode=disable
 
+# 上游模型服务路由。匹配前缀的请求会剥离该前缀后转发到上游。
 providers:
-  openai:
+  # 逻辑服务名，会出现在追踪记录、指标、认证审计事件和个人敏感信息规则范围中。
+  llm:
+    # 上游基础地址。请求转发前会先去掉 /llm 前缀。
     upstream: https://api.openai.com
-    prefix: /openai
-  anthropic:
-    upstream: https://api.anthropic.com
-    prefix: /anthropic
+    # 对外暴露的网关前缀。例如 /llm/v1/chat/completions 会转发为上游 /v1/chat/completions。
+    prefix: /llm
 
+# 追踪记录中的请求/响应内容采集配置。
 tracing:
+  # 是否把请求体和响应体写入追踪记录。除非需要回放或调试请求内容，建议保持 false。
   capture_bodies: false
+  # 每个请求体和每个响应体最多采集的字节数。
   body_max_size: 1048576
 
+# OpenTelemetry 与 Prometheus 可观测性配置。
 observability:
   otel:
+    # OpenTelemetry 追踪和指标总开关。
     enabled: false
+    # OTLP HTTP 收集器地址。启用追踪或 OTLP 指标时使用。
     endpoint: localhost:4318
+    # true 表示使用明文 HTTP 导出；false 表示 OTLP 端点需要 HTTPS/TLS。
     insecure: true
+    # 写入可观测性后端的 service.name 资源属性。
     service_name: ongoingai-gateway
+    # 是否向 OTLP 导出分布式追踪片段。
     traces_enabled: true
+    # 是否向 OTLP 导出指标。只使用 Prometheus 拉取时可关闭。
     metrics_enabled: true
+    # 是否在网关进程中暴露 Prometheus 抓取端点。
     prometheus_enabled: false
+    # Prometheus 抓取路径。不能与 /api 或 /llm 等模型服务前缀冲突。
     prometheus_path: /metrics
+    # 追踪采样比例，0.0 表示不采样，1.0 表示全部采样。
     sampling_ratio: 1.0
+    # 每次 OTLP 导出请求的超时时间，单位毫秒。
     export_timeout_ms: 3000
+    # 指标批量导出的间隔，单位毫秒。
     metric_export_interval_ms: 10000
 
+# 个人敏感信息策略。控制敏感数据是否可存储、是否在上游转发前脱敏，或是否直接阻断请求。
 pii:
-  # empty mode follows safe defaults:
-  # - when tracing.capture_bodies=false -> off
-  # - when tracing.capture_bodies=true  -> redact_storage
-  # supported modes: off, redact_storage, redact_upstream, block
-  # redact_upstream/block are fail-closed on policy-evaluation uncertainty
+  # mode 为空时使用安全默认值：
+  # - tracing.capture_bodies=false 时为 off
+  # - tracing.capture_bodies=true 时为 redact_storage
+  # 支持的模式：off、redact_storage、redact_upstream、block
+  # redact_upstream 和 block 在策略判断不确定时会失败即拒绝
+  # 全局个人敏感信息模式。留空时根据 tracing.capture_bodies 自动推导。
   mode: ""
+  # 策略标识，会记录到追踪元数据，便于排查是哪套策略产生了脱敏。
   policy_id: default/v1
-  # scopes are optional overrides. The most specific matching scope wins.
-  # ties on specificity resolve by declaration order (first wins).
+  # scopes 是可选的局部覆盖规则。匹配条件越具体优先级越高。
+  # 如果具体程度相同，则按声明顺序优先，排在前面的规则生效。
   # scopes:
   #   - match:
   #       workspace_id: workspace-compliance
-  #       provider: openai
-  #       route_prefix: /openai/v1/chat
+  #       provider: llm
+  #       route_prefix: /llm/v1/chat
   #     mode: block
   #     policy_id: workspace-compliance/v1
+  # PII 处理启用时，需要检查或脱敏的请求/响应部分。
   stages:
+    # 是否检查或脱敏请求头，用于存储策略或上游转发策略。
     request_headers: true
+    # 是否检查或脱敏请求体，用于存储策略或上游转发策略。
     request_body: true
+    # 是否检查或脱敏响应头，用于存储策略。
     response_headers: true
+    # 是否检查或脱敏响应体，用于存储策略。
     response_body: true
+  # 启用的自由文本敏感信息检测器。
   detectors:
+    # 检测邮箱地址。
     email: true
+    # 检测美式电话号码。
     phone: true
+    # 检测美国社会安全号格式。
     ssn: true
+    # 检测类似令牌的密钥，例如 bearer 令牌和 JWT。
     token_like: true
+  # 请求头和响应头脱敏配置。
   headers:
+    # 请求头脱敏启用时，这些请求头名称的值会始终从存储的追踪记录中脱敏。
     denylist:
       - authorization
       - cookie
       - set-cookie
       - x-api-key
       - x-ongoingai-gateway-key
+  # JSON 请求体/响应体脱敏配置。
   body:
+    # 请求体/响应体脱敏启用时，这些 JSON 键对应的值会始终脱敏。
     key_denylist:
       - email
       - phone
@@ -77,11 +117,18 @@ pii:
       - ssn
       - api_key
       - authorization
+  # 脱敏输出格式。
   replacement:
+    # 占位符模板。{type} 表示检测器或键类型，{hash} 表示稳定哈希。
     format: "[{type}_REDACTED:{hash}]"
+    # 脱敏哈希的可选盐值。敏感环境建议设置，避免跨部署关联同一原始值。
     hash_salt: ""
 
+# 网关认证配置。它和上游模型服务 API 密钥是两套凭证，上游凭证仍会透传给上游。
 auth:
+  # 是否要求访问 /api 受保护路由和模型服务代理路由时提供网关密钥。
   enabled: false
+  # 携带网关密钥的请求头。不要使用 Authorization 或 X-API-Key，因为它们通常是上游凭证。
   header: X-OngoingAI-Gateway-Key
+  # 静态网关密钥列表，适合本地或单机部署。Postgres 部署可动态管理密钥。
   keys: []

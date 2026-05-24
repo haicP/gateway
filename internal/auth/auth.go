@@ -164,11 +164,15 @@ func (a *Authorizer) Authenticate(r *http.Request) (*Identity, error) {
 
 type MiddlewareOptions struct {
 	APIPrefix          string
-	OpenAIPrefix       string
-	AnthropicPrefix    string
+	Providers          []ProviderRoute
 	ProxyLimiter       ProxyLimiter
 	ProxyUsageRecorder ProxyUsageRecorder
 	AuditRecorder      AuditRecorder
+}
+
+type ProviderRoute struct {
+	Name   string
+	Prefix string
 }
 
 type AuthorizerResolver func(r *http.Request) (*Authorizer, error)
@@ -226,11 +230,10 @@ func middlewareWithResolver(resolver AuthorizerResolver, options MiddlewareOptio
 	if apiPrefix == "/" {
 		apiPrefix = "/api"
 	}
-	openAIPrefix := pathutil.NormalizePrefix(options.OpenAIPrefix)
-	anthropicPrefix := pathutil.NormalizePrefix(options.AnthropicPrefix)
+	providerRoutes := normalizeProviderRoutes(options.Providers)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		decision := requiredAccess(r.Method, r.URL.Path, apiPrefix, openAIPrefix, anthropicPrefix)
+		decision := requiredAccess(r.Method, r.URL.Path, apiPrefix, providerRoutes)
 		if decision.mode == accessModeBypass {
 			next.ServeHTTP(w, r)
 			return
@@ -292,9 +295,9 @@ func middlewareWithResolver(resolver AuthorizerResolver, options MiddlewareOptio
 		request.Header = r.Header.Clone()
 		request.Header.Del(authorizer.HeaderName())
 
-		if decision.provider != "" && !hasProviderCredential(request.Header, decision.provider) {
+		if decision.provider != "" && !hasProviderCredential(request) {
 			recordDeny(http.StatusForbidden, "missing_provider_credential", identity, "")
-			writeAuthError(w, http.StatusForbidden, "missing provider API key — pass your provider key via Authorization or X-API-Key header")
+			writeAuthError(w, http.StatusForbidden, "missing provider API key — pass your provider key via Authorization, X-API-Key, X-Goog-API-Key, or key query parameter")
 			return
 		}
 		if decision.provider != "" && options.ProxyLimiter != nil {
@@ -318,6 +321,19 @@ func middlewareWithResolver(resolver AuthorizerResolver, options MiddlewareOptio
 	})
 }
 
+func normalizeProviderRoutes(routes []ProviderRoute) []ProviderRoute {
+	normalized := make([]ProviderRoute, 0, len(routes))
+	for _, route := range routes {
+		name := strings.TrimSpace(route.Name)
+		prefix := pathutil.NormalizePrefix(route.Prefix)
+		if name == "" || prefix == "/" {
+			continue
+		}
+		normalized = append(normalized, ProviderRoute{Name: name, Prefix: prefix})
+	}
+	return normalized
+}
+
 type accessMode int
 
 const (
@@ -336,32 +352,25 @@ type accessDecision struct {
 	denyReason     string
 }
 
-func requiredAccess(method, path, apiPrefix, openAIPrefix, anthropicPrefix string) accessDecision {
+func requiredAccess(method, path, apiPrefix string, providerRoutes []ProviderRoute) accessDecision {
 	method = strings.ToUpper(strings.TrimSpace(method))
 
-	if isPreflight(method) && (pathutil.HasPathPrefix(path, apiPrefix) || pathutil.HasPathPrefix(path, openAIPrefix) || pathutil.HasPathPrefix(path, anthropicPrefix)) {
+	if isPreflight(method) && (pathutil.HasPathPrefix(path, apiPrefix) || matchesProviderRoute(path, providerRoutes).Name != "") {
 		return accessDecision{mode: accessModeBypass}
 	}
 
+	if route := matchesProviderRoute(path, providerRoutes); route.Name != "" {
+		return accessDecision{
+			mode:           accessModeRequirePermission,
+			resource:       "proxy",
+			resourceAction: "forward",
+			scope:          "workspace",
+			permission:     PermissionProxyWrite,
+			provider:       route.Name,
+		}
+	}
+
 	switch {
-	case pathutil.HasPathPrefix(path, openAIPrefix):
-		return accessDecision{
-			mode:           accessModeRequirePermission,
-			resource:       "proxy",
-			resourceAction: "forward",
-			scope:          "workspace",
-			permission:     PermissionProxyWrite,
-			provider:       "openai",
-		}
-	case pathutil.HasPathPrefix(path, anthropicPrefix):
-		return accessDecision{
-			mode:           accessModeRequirePermission,
-			resource:       "proxy",
-			resourceAction: "forward",
-			scope:          "workspace",
-			permission:     PermissionProxyWrite,
-			provider:       "anthropic",
-		}
 	case pathutil.HasPathPrefix(path, apiPrefix):
 		switch {
 		case path == apiPrefix+"/health" && isReadMethod(method):
@@ -435,15 +444,23 @@ func requiredAccess(method, path, apiPrefix, openAIPrefix, anthropicPrefix strin
 	}
 }
 
-func hasProviderCredential(header http.Header, provider string) bool {
-	switch provider {
-	case "openai":
-		return strings.TrimSpace(header.Get("Authorization")) != "" || strings.TrimSpace(header.Get("X-API-Key")) != ""
-	case "anthropic":
-		return strings.TrimSpace(header.Get("X-API-Key")) != "" || strings.TrimSpace(header.Get("Authorization")) != ""
-	default:
-		return true
+func matchesProviderRoute(path string, routes []ProviderRoute) ProviderRoute {
+	for _, route := range routes {
+		if pathutil.HasPathPrefix(path, route.Prefix) {
+			return route
+		}
 	}
+	return ProviderRoute{}
+}
+
+func hasProviderCredential(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	return strings.TrimSpace(r.Header.Get("Authorization")) != "" ||
+		strings.TrimSpace(r.Header.Get("X-API-Key")) != "" ||
+		strings.TrimSpace(r.Header.Get("X-Goog-API-Key")) != "" ||
+		strings.TrimSpace(r.URL.Query().Get("key")) != ""
 }
 
 func defaultRolePermissions(role string) map[Permission]struct{} {
@@ -527,7 +544,7 @@ func AuthorizationMatrix() []AuthorizationRule {
 			Action:     "forward",
 			Scope:      "workspace",
 			Methods:    []string{"*"},
-			Path:       "/openai/* and /anthropic/*",
+			Path:       "configured provider prefixes, for example /llm/*",
 			Permission: PermissionProxyWrite,
 		},
 	}

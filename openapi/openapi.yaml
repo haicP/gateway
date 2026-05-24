@@ -4,7 +4,7 @@ info:
   version: 0.1.0
   description: |
     HTTP API exposed by the OngoingAI Gateway process.
-    Provider proxy routes (`/openai/*`, `/anthropic/*`) are pass-through and are
+    Provider proxy routes (for example `/llm/*`) are pass-through and are
     intentionally not fully modeled in this schema.
 servers:
   - url: http://localhost:8080

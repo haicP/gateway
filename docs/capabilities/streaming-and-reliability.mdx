@@ -90,7 +90,7 @@ chunk metadata are still captured.
 2. Send a streaming request in Terminal B.
 
    ```bash filename="Terminal B"
-   curl -N http://localhost:8080/openai/v1/chat/completions \
+   curl -N http://localhost:8080/llm/v1/chat/completions \
      -H "Authorization: Bearer $OPENAI_API_KEY" \
      -H "Content-Type: application/json" \
      -d '{"model":"gpt-4o-mini","stream":true,"messages":[{"role":"user","content":"Reply with ok"}]}'

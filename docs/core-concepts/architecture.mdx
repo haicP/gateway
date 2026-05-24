@@ -21,8 +21,7 @@ trace persistence.
 
 ## Request path
 
-1. A client sends traffic to a provider route such as `/openai/...` or
-   `/anthropic/...`.
+1. A client sends traffic to a provider route such as `/llm/...`.
 2. Auth middleware validates gateway access when `auth.enabled=true`.
 3. Capture middleware records request and response metadata.
 4. Reverse proxy middleware forwards the request to the configured provider

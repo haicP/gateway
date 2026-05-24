@@ -589,6 +589,8 @@ func (r *Runtime) MakeWriteSpanHook() func(batchSize int) func(error) {
 
 func providerForPath(path string) (provider, prefix string) {
 	switch {
+	case pathutil.HasPathPrefix(path, "/llm"):
+		return "llm", "/llm"
 	case pathutil.HasPathPrefix(path, "/openai"):
 		return "openai", "/openai"
 	case pathutil.HasPathPrefix(path, "/anthropic"):
@@ -822,6 +824,8 @@ func normalizeOTLPEndpoint(raw string) (string, bool, error) {
 
 func routePatternForPath(path string) string {
 	switch {
+	case pathutil.HasPathPrefix(path, "/llm"):
+		return "/llm/*"
 	case pathutil.HasPathPrefix(path, "/openai"):
 		return "/openai/*"
 	case pathutil.HasPathPrefix(path, "/anthropic"):

@@ -1,8 +1,10 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -62,12 +64,9 @@ storage:
   driver: sqlite
   path: /tmp/custom.db
 providers:
-  openai:
-    upstream: https://example-openai.local
-    prefix: /oa
-  anthropic:
-    upstream: https://example-anthropic.local
-    prefix: /anth
+  llm:
+    upstream: https://example-llm.local
+    prefix: /llm
 tracing:
   capture_bodies: false
   body_max_size: 12345
@@ -103,7 +102,7 @@ auth:
 
 	t.Setenv("ONGOINGAI_PORT", "7070")
 	t.Setenv("ONGOINGAI_CAPTURE_BODIES", "true")
-	t.Setenv("ONGOINGAI_OPENAI_UPSTREAM", "https://api.openai.com")
+	t.Setenv("ONGOINGAI_LLM_UPSTREAM", "https://api.openai.com")
 	t.Setenv("ONGOINGAI_AUTH_ENABLED", "true")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "collector:4318")
 	t.Setenv("OTEL_SERVICE_NAME", "env-gateway")
@@ -126,11 +125,11 @@ auth:
 	if cfg.Tracing.CaptureBodies != true {
 		t.Fatalf("capture_bodies=%v, want true (env override)", cfg.Tracing.CaptureBodies)
 	}
-	if cfg.Providers.OpenAI.Upstream != "https://api.openai.com" {
-		t.Fatalf("openai.upstream=%q, want env override", cfg.Providers.OpenAI.Upstream)
+	if cfg.Providers["llm"].Upstream != "https://api.openai.com" {
+		t.Fatalf("llm.upstream=%q, want env override", cfg.Providers["llm"].Upstream)
 	}
-	if cfg.Providers.Anthropic.Upstream != "https://example-anthropic.local" {
-		t.Fatalf("anthropic.upstream=%q, want yaml value", cfg.Providers.Anthropic.Upstream)
+	if cfg.Providers["llm"].Prefix != "/llm" {
+		t.Fatalf("llm.prefix=%q, want yaml value", cfg.Providers["llm"].Prefix)
 	}
 	if !cfg.Observability.OTel.Enabled {
 		t.Fatalf("observability.otel.enabled=%v, want true (env override)", cfg.Observability.OTel.Enabled)
@@ -164,6 +163,32 @@ auth:
 	}
 	if cfg.Auth.Keys[0].OrgID != "org-a" || cfg.Auth.Keys[0].WorkspaceID != "workspace-a" {
 		t.Fatalf("auth key org/workspace=%s/%s, want org-a/workspace-a", cfg.Auth.Keys[0].OrgID, cfg.Auth.Keys[0].WorkspaceID)
+	}
+}
+
+func TestLoadPreservesUnlimitedBodyMaxSizeValues(t *testing.T) {
+	t.Parallel()
+
+	for _, value := range []int{0, -1} {
+		value := value
+		t.Run(strconv.Itoa(value), func(t *testing.T) {
+			t.Parallel()
+			configPath := filepath.Join(t.TempDir(), "ongoingai.yaml")
+			configYAML := fmt.Sprintf(`tracing:
+  capture_bodies: true
+  body_max_size: %d
+`, value)
+			if err := os.WriteFile(configPath, []byte(configYAML), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			cfg, err := Load(configPath)
+			if err != nil {
+				t.Fatalf("Load() error: %v", err)
+			}
+			if cfg.Tracing.BodyMaxSize != value {
+				t.Fatalf("body_max_size=%d, want %d", cfg.Tracing.BodyMaxSize, value)
+			}
+		})
 	}
 }
 
@@ -344,14 +369,97 @@ func TestValidateRejectsProviderPrefixWithoutSlash(t *testing.T) {
 	t.Parallel()
 
 	cfg := Default()
-	cfg.Providers.OpenAI.Prefix = "openai"
+	cfg.Providers["llm"] = ProviderConfig{
+		Upstream: "https://api.openai.com",
+		Prefix:   "llm",
+	}
 
 	err := Validate(cfg)
 	if err == nil {
 		t.Fatal("Validate() error=nil, want provider prefix validation error")
 	}
-	if !strings.Contains(err.Error(), "providers.openai.prefix must start with '/'") {
+	if !strings.Contains(err.Error(), "providers.llm.prefix must start with '/'") {
 		t.Fatalf("error=%q, want provider prefix validation message", err.Error())
+	}
+}
+
+func TestValidateRejectsEmptyProviders(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.Providers = ProvidersConfig{}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("Validate() error=nil, want providers validation error")
+	}
+	if !strings.Contains(err.Error(), "providers must configure at least one provider") {
+		t.Fatalf("error=%q, want empty providers validation message", err.Error())
+	}
+}
+
+func TestValidateRejectsProviderPrefixOverlap(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.Providers = ProvidersConfig{
+		"llm": {
+			Upstream: "https://api.openai.com",
+			Prefix:   "/llm",
+		},
+		"nested": {
+			Upstream: "https://api.example.com",
+			Prefix:   "/llm/nested",
+		},
+	}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("Validate() error=nil, want provider prefix overlap error")
+	}
+	if !strings.Contains(err.Error(), "provider prefixes must not overlap") {
+		t.Fatalf("error=%q, want provider prefix overlap message", err.Error())
+	}
+}
+
+func TestValidateRejectsProviderPrefixOverlappingAPI(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.Providers["llm"] = ProviderConfig{
+		Upstream: "https://api.openai.com",
+		Prefix:   "/api",
+	}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("Validate() error=nil, want /api prefix overlap error")
+	}
+	if !strings.Contains(err.Error(), "must not overlap with /api routes") {
+		t.Fatalf("error=%q, want /api overlap validation message", err.Error())
+	}
+}
+
+func TestValidateRejectsUnknownProviderConfigField(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "invalid-provider-field.yaml")
+	configYAML := `providers:
+  llm:
+    upstream: https://api.openai.com
+    prefix: /llm
+    unexpected_field: true
+`
+	if err := os.WriteFile(configPath, []byte(configYAML), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(configPath)
+	if err == nil {
+		t.Fatalf("Load() error=nil, want unknown provider field parse error")
+	}
+	if !strings.Contains(err.Error(), "field unexpected_field not found") {
+		t.Fatalf("error=%q, want unknown-field message", err.Error())
 	}
 }
 
@@ -653,7 +761,7 @@ func TestValidateRejectsPrometheusPathWithoutSlash(t *testing.T) {
 func TestValidateRejectsPrometheusPathCollidingWithReservedPrefixes(t *testing.T) {
 	t.Parallel()
 
-	for _, path := range []string{"/api/metrics", "/openai/metrics", "/anthropic/metrics"} {
+	for _, path := range []string{"/api/metrics", "/llm/metrics"} {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
 

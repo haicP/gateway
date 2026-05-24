@@ -1,10 +1,16 @@
 package trace
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -82,9 +88,38 @@ func (s *PostgresStore) writeTraceRow(ctx context.Context, row *Trace) error {
 		return nil
 	}
 
-	_, err := s.db.ExecContext(ctx, `
-INSERT INTO traces (
-    id,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin postgres trace transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	if err := writePostgresTraceRow(ctx, tx, row); err != nil {
+		return err
+	}
+	if err := writePostgresTraceBodyRow(ctx, tx, row); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit postgres trace transaction: %w", err)
+	}
+
+	return nil
+}
+
+type postgresExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func writePostgresTraceRow(ctx context.Context, execer postgresExecer, row *Trace) error {
+	if row == nil {
+		return nil
+	}
+	mainRow := postgresMainTraceRow(row)
+	_, err := execer.ExecContext(ctx, `
+	INSERT INTO traces (
+	    id,
     trace_group_id,
     org_id,
     workspace_id,
@@ -136,37 +171,181 @@ INSERT INTO traces (
 	    NULLIF($24, '')::jsonb,
 	    $25
 	)`,
-		row.ID,
-		nullIfEmpty(row.TraceGroupID),
-		row.OrgID,
-		row.WorkspaceID,
-		row.Timestamp.UTC(),
-		row.Provider,
-		row.Model,
-		row.RequestMethod,
-		row.RequestPath,
-		row.RequestHeaders,
-		row.RequestBody,
-		row.ResponseStatus,
-		row.ResponseHeaders,
-		row.ResponseBody,
-		row.InputTokens,
-		row.OutputTokens,
-		row.TotalTokens,
-		row.LatencyMS,
-		row.TimeToFirstTokenMS,
-		row.TimeToFirstTokenUS,
-		row.APIKeyHash,
-		row.GatewayKeyID,
-		row.EstimatedCostUSD,
-		row.Metadata,
-		row.CreatedAt.UTC(),
+		mainRow.ID,
+		nullIfEmpty(mainRow.TraceGroupID),
+		mainRow.OrgID,
+		mainRow.WorkspaceID,
+		mainRow.Timestamp.UTC(),
+		mainRow.Provider,
+		mainRow.Model,
+		mainRow.RequestMethod,
+		mainRow.RequestPath,
+		mainRow.RequestHeaders,
+		mainRow.RequestBody,
+		mainRow.ResponseStatus,
+		mainRow.ResponseHeaders,
+		mainRow.ResponseBody,
+		mainRow.InputTokens,
+		mainRow.OutputTokens,
+		mainRow.TotalTokens,
+		mainRow.LatencyMS,
+		mainRow.TimeToFirstTokenMS,
+		mainRow.TimeToFirstTokenUS,
+		mainRow.APIKeyHash,
+		mainRow.GatewayKeyID,
+		mainRow.EstimatedCostUSD,
+		mainRow.Metadata,
+		mainRow.CreatedAt.UTC(),
 	)
 	if err != nil {
 		return err
 	}
 
 	return nil
+}
+
+func postgresMainTraceRow(row *Trace) *Trace {
+	if row == nil {
+		return nil
+	}
+	mainRow := *row
+	if mainRow.RequestBodyPath != "" {
+		mainRow.RequestBody = ""
+	}
+	if mainRow.ResponseBodyPath != "" {
+		mainRow.ResponseBody = ""
+	}
+	return &mainRow
+}
+
+func writePostgresTraceBodyRow(ctx context.Context, execer postgresExecer, row *Trace) error {
+	if row == nil || (row.RequestBodyPath == "" && row.ResponseBodyPath == "") {
+		return nil
+	}
+	requestBody, err := gzipTraceBody(row.RequestBodyPath)
+	if err != nil {
+		return fmt.Errorf("compress request body: %w", err)
+	}
+	responseBody, err := gzipTraceBody(row.ResponseBodyPath)
+	if err != nil {
+		return fmt.Errorf("compress response body: %w", err)
+	}
+	requestSHA := nonEmptyString(row.RequestBodySHA256, requestBody.sha256)
+	responseSHA := nonEmptyString(row.ResponseBodySHA256, responseBody.sha256)
+	piiStatus := traceMetadataString(row.Metadata, "body_pii_status")
+	if piiStatus == "" {
+		piiStatus = "unknown"
+	}
+	_, err = execer.ExecContext(ctx, `
+	INSERT INTO trace_bodies (
+	    trace_id,
+	    request_body_gzip,
+	    response_body_gzip,
+	    request_body_size_bytes,
+	    response_body_size_bytes,
+	    request_body_compressed_size_bytes,
+	    response_body_compressed_size_bytes,
+	    request_body_sha256,
+	    response_body_sha256,
+	    request_body_truncated,
+	    response_body_truncated,
+	    pii_status,
+	    created_at
+	) VALUES (
+	    $1, $2, $3, $4, $5, $6, $7, NULLIF($8, ''), NULLIF($9, ''), $10, $11, $12, $13
+	)
+	ON CONFLICT (trace_id) DO UPDATE SET
+	    request_body_gzip = EXCLUDED.request_body_gzip,
+	    response_body_gzip = EXCLUDED.response_body_gzip,
+	    request_body_size_bytes = EXCLUDED.request_body_size_bytes,
+	    response_body_size_bytes = EXCLUDED.response_body_size_bytes,
+	    request_body_compressed_size_bytes = EXCLUDED.request_body_compressed_size_bytes,
+	    response_body_compressed_size_bytes = EXCLUDED.response_body_compressed_size_bytes,
+	    request_body_sha256 = EXCLUDED.request_body_sha256,
+	    response_body_sha256 = EXCLUDED.response_body_sha256,
+	    request_body_truncated = EXCLUDED.request_body_truncated,
+	    response_body_truncated = EXCLUDED.response_body_truncated,
+	    pii_status = EXCLUDED.pii_status`,
+		row.ID,
+		nullBytes(requestBody.compressed),
+		nullBytes(responseBody.compressed),
+		nonZeroInt64(row.RequestBodyBytes, requestBody.rawBytes),
+		nonZeroInt64(row.ResponseBodyBytes, responseBody.rawBytes),
+		int64(len(requestBody.compressed)),
+		int64(len(responseBody.compressed)),
+		requestSHA,
+		responseSHA,
+		row.RequestBodyTruncated,
+		row.ResponseBodyTruncated,
+		piiStatus,
+		row.CreatedAt.UTC(),
+	)
+	if err != nil {
+		return fmt.Errorf("write trace body row: %w", err)
+	}
+	return nil
+}
+
+type compressedTraceBody struct {
+	compressed []byte
+	rawBytes   int64
+	sha256     string
+}
+
+func gzipTraceBody(path string) (compressedTraceBody, error) {
+	if path == "" {
+		return compressedTraceBody{}, nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return compressedTraceBody{}, err
+	}
+	defer file.Close()
+
+	var compressed bytes.Buffer
+	hash := sha256.New()
+	gzipWriter, err := gzip.NewWriterLevel(&compressed, gzip.BestSpeed)
+	if err != nil {
+		return compressedTraceBody{}, err
+	}
+	written, copyErr := io.Copy(gzipWriter, io.TeeReader(file, hash))
+	closeErr := gzipWriter.Close()
+	if copyErr != nil {
+		return compressedTraceBody{}, copyErr
+	}
+	if closeErr != nil {
+		return compressedTraceBody{}, closeErr
+	}
+	return compressedTraceBody{
+		compressed: compressed.Bytes(),
+		rawBytes:   written,
+		sha256:     hex.EncodeToString(hash.Sum(nil)),
+	}, nil
+}
+
+func nullBytes(data []byte) any {
+	if len(data) == 0 {
+		return nil
+	}
+	return data
+}
+
+func nonZeroInt64(primary, fallback int64) int64 {
+	if primary > 0 {
+		return primary
+	}
+	return fallback
+}
+
+func nonEmptyString(primary, fallback string) string {
+	if strings.TrimSpace(primary) != "" {
+		return primary
+	}
+	return fallback
+}
+
+func traceMetadataString(raw, key string) string {
+	return MetadataString(DecodeMetadataMap(raw), key)
 }
 
 func (s *PostgresStore) WriteBatch(ctx context.Context, traces []*Trace) error {
@@ -273,35 +452,39 @@ INSERT INTO traces (
 	defer stmt.Close()
 
 	for _, row := range rows {
+		mainRow := postgresMainTraceRow(row)
 		if _, err := stmt.ExecContext(
 			ctx,
-			row.ID,
-			nullIfEmpty(row.TraceGroupID),
-			row.OrgID,
-			row.WorkspaceID,
-			row.Timestamp.UTC(),
-			row.Provider,
-			row.Model,
-			row.RequestMethod,
-			row.RequestPath,
-			row.RequestHeaders,
-			row.RequestBody,
-			row.ResponseStatus,
-			row.ResponseHeaders,
-			row.ResponseBody,
-			row.InputTokens,
-			row.OutputTokens,
-			row.TotalTokens,
-			row.LatencyMS,
-			row.TimeToFirstTokenMS,
-			row.TimeToFirstTokenUS,
-			row.APIKeyHash,
-			row.GatewayKeyID,
-			row.EstimatedCostUSD,
-			row.Metadata,
-			row.CreatedAt.UTC(),
+			mainRow.ID,
+			nullIfEmpty(mainRow.TraceGroupID),
+			mainRow.OrgID,
+			mainRow.WorkspaceID,
+			mainRow.Timestamp.UTC(),
+			mainRow.Provider,
+			mainRow.Model,
+			mainRow.RequestMethod,
+			mainRow.RequestPath,
+			mainRow.RequestHeaders,
+			mainRow.RequestBody,
+			mainRow.ResponseStatus,
+			mainRow.ResponseHeaders,
+			mainRow.ResponseBody,
+			mainRow.InputTokens,
+			mainRow.OutputTokens,
+			mainRow.TotalTokens,
+			mainRow.LatencyMS,
+			mainRow.TimeToFirstTokenMS,
+			mainRow.TimeToFirstTokenUS,
+			mainRow.APIKeyHash,
+			mainRow.GatewayKeyID,
+			mainRow.EstimatedCostUSD,
+			mainRow.Metadata,
+			mainRow.CreatedAt.UTC(),
 		); err != nil {
 			return fmt.Errorf("write trace %q in batch: %w", row.ID, err)
+		}
+		if err := writePostgresTraceBodyRow(ctx, tx, row); err != nil {
+			return fmt.Errorf("write trace body %q in batch: %w", row.ID, err)
 		}
 	}
 
@@ -312,7 +495,7 @@ INSERT INTO traces (
 	return nil
 }
 
-const postgresTraceSelectColumns = `
+const postgresTraceDetailSelectColumns = `
 id,
 trace_group_id,
 org_id,
@@ -337,11 +520,39 @@ latency_ms,
 	COALESCE(gateway_key_id, ''),
 	COALESCE(estimated_cost_usd, 0),
 	COALESCE(metadata::text, ''),
+created_at
+	`
+
+const postgresTraceSummarySelectColumns = `
+id,
+trace_group_id,
+org_id,
+workspace_id,
+timestamp,
+provider,
+model,
+request_method,
+request_path,
+COALESCE(request_headers::text, ''),
+'' AS request_body,
+response_status,
+COALESCE(response_headers::text, ''),
+'' AS response_body,
+input_tokens,
+output_tokens,
+total_tokens,
+latency_ms,
+	time_to_first_token_ms,
+	time_to_first_token_us,
+	COALESCE(api_key_hash, ''),
+	COALESCE(gateway_key_id, ''),
+	COALESCE(estimated_cost_usd, 0),
+	COALESCE(metadata::text, ''),
 	created_at
-`
+	`
 
 func (s *PostgresStore) GetTrace(ctx context.Context, id string) (*Trace, error) {
-	row := s.db.QueryRowContext(ctx, "SELECT "+postgresTraceSelectColumns+" FROM traces WHERE id = $1 LIMIT 1", id)
+	row := s.db.QueryRowContext(ctx, "SELECT "+postgresTraceDetailSelectColumns+" FROM traces WHERE id = $1 LIMIT 1", id)
 	traceRow, err := scanPostgresTraceRow(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -349,7 +560,58 @@ func (s *PostgresStore) GetTrace(ctx context.Context, id string) (*Trace, error)
 		}
 		return nil, fmt.Errorf("get trace %q: %w", id, err)
 	}
+	if err := s.loadCompressedTraceBodies(ctx, traceRow); err != nil {
+		return nil, fmt.Errorf("load trace body %q: %w", id, err)
+	}
 	return traceRow, nil
+}
+
+func (s *PostgresStore) loadCompressedTraceBodies(ctx context.Context, item *Trace) error {
+	if s == nil || item == nil {
+		return nil
+	}
+	var (
+		requestBody  []byte
+		responseBody []byte
+	)
+	err := s.db.QueryRowContext(ctx, `
+	SELECT request_body_gzip, response_body_gzip
+	FROM trace_bodies
+	WHERE trace_id = $1`, item.ID).Scan(&requestBody, &responseBody)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	if len(requestBody) > 0 {
+		body, err := gunzipTraceBody(requestBody)
+		if err != nil {
+			return fmt.Errorf("decompress request body: %w", err)
+		}
+		item.RequestBody = body
+	}
+	if len(responseBody) > 0 {
+		body, err := gunzipTraceBody(responseBody)
+		if err != nil {
+			return fmt.Errorf("decompress response body: %w", err)
+		}
+		item.ResponseBody = body
+	}
+	return nil
+}
+
+func gunzipTraceBody(data []byte) (string, error) {
+	reader, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return "", err
+	}
+	defer reader.Close()
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
 }
 
 func (s *PostgresStore) QueryTraces(ctx context.Context, filter TraceFilter) (*TraceResult, error) {
@@ -368,7 +630,7 @@ func (s *PostgresStore) QueryTraces(ctx context.Context, filter TraceFilter) (*T
 	limitPlaceholder := fmt.Sprintf("$%d", len(args)+1)
 	args = append(args, limit+1)
 
-	query := "SELECT " + postgresTraceSelectColumns + " FROM traces WHERE " + whereSQL + " ORDER BY created_at DESC, id DESC LIMIT " + limitPlaceholder
+	query := "SELECT " + postgresTraceSummarySelectColumns + " FROM traces WHERE " + whereSQL + " ORDER BY created_at DESC, id DESC LIMIT " + limitPlaceholder
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query traces: %w", err)
@@ -1138,10 +1400,28 @@ USING (
 WITH CHECK (
     (NULLIF(current_setting('ongoingai.org_id', true), '') IS NULL
         OR org_id = NULLIF(current_setting('ongoingai.org_id', true), ''))
-    AND
-    (NULLIF(current_setting('ongoingai.workspace_id', true), '') IS NULL
-        OR workspace_id = NULLIF(current_setting('ongoingai.workspace_id', true), ''))
-);`,
+	    AND
+	    (NULLIF(current_setting('ongoingai.workspace_id', true), '') IS NULL
+	        OR workspace_id = NULLIF(current_setting('ongoingai.workspace_id', true), ''))
+	);`,
+		`ALTER TABLE trace_bodies ENABLE ROW LEVEL SECURITY;`,
+		`ALTER TABLE trace_bodies FORCE ROW LEVEL SECURITY;`,
+		`DROP POLICY IF EXISTS trace_bodies_tenant_scope ON trace_bodies;`,
+		`CREATE POLICY trace_bodies_tenant_scope ON trace_bodies
+	USING (
+	    EXISTS (
+	        SELECT 1
+	        FROM traces
+	        WHERE traces.id = trace_bodies.trace_id
+	    )
+	)
+	WITH CHECK (
+	    EXISTS (
+	        SELECT 1
+	        FROM traces
+	        WHERE traces.id = trace_bodies.trace_id
+	    )
+	);`,
 	}
 	for _, stmt := range statements {
 		if _, err := s.db.Exec(stmt); err != nil {

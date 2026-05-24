@@ -20,7 +20,7 @@ func TestBuildTraceRecordParsesButDoesNotStoreBodiesWhenDisabled(t *testing.T) {
 
 	exchange := &proxy.CapturedExchange{
 		Method:         http.MethodPost,
-		Path:           "/anthropic/v1/messages",
+		Path:           "/llm/v1/messages",
 		StatusCode:     http.StatusOK,
 		RequestHeaders: http.Header{"X-Api-Key": {"sk-ant-123456"}},
 		RequestBody:    []byte(`{"model":"claude-haiku-4-5-20251001"}`),
@@ -29,8 +29,8 @@ func TestBuildTraceRecordParsesButDoesNotStoreBodiesWhenDisabled(t *testing.T) {
 	}
 
 	record := buildTraceRecord(cfg, providers.DefaultRegistry(), exchange)
-	if record.Provider != "anthropic" {
-		t.Fatalf("provider=%q, want anthropic", record.Provider)
+	if record.Provider != "llm" {
+		t.Fatalf("provider=%q, want llm", record.Provider)
 	}
 	if record.Model != "claude-haiku-4-5-20251001" {
 		t.Fatalf("model=%q", record.Model)
@@ -38,7 +38,7 @@ func TestBuildTraceRecordParsesButDoesNotStoreBodiesWhenDisabled(t *testing.T) {
 	if record.InputTokens != 1000 || record.OutputTokens != 500 || record.TotalTokens != 1500 {
 		t.Fatalf("usage=%d/%d/%d", record.InputTokens, record.OutputTokens, record.TotalTokens)
 	}
-	if math.Abs(record.EstimatedCostUSD-0.0035) > 1e-9 {
+	if math.Abs(record.EstimatedCostUSD) > 1e-9 {
 		t.Fatalf("estimated_cost_usd=%f", record.EstimatedCostUSD)
 	}
 	if record.RequestBody != "" || record.ResponseBody != "" {
@@ -71,7 +71,7 @@ func TestBuildTraceRecordParsesStreamingUsageWithCaptureDisabled(t *testing.T) {
 
 	exchange := &proxy.CapturedExchange{
 		Method:             http.MethodPost,
-		Path:               "/anthropic/v1/messages",
+		Path:               "/llm/v1/messages",
 		StatusCode:         http.StatusOK,
 		Streaming:          true,
 		StreamChunks:       2,
@@ -88,7 +88,7 @@ func TestBuildTraceRecordParsesStreamingUsageWithCaptureDisabled(t *testing.T) {
 	if record.InputTokens != 2000 || record.OutputTokens != 1000 || record.TotalTokens != 3000 {
 		t.Fatalf("usage=%d/%d/%d", record.InputTokens, record.OutputTokens, record.TotalTokens)
 	}
-	if math.Abs(record.EstimatedCostUSD-0.035) > 1e-9 {
+	if math.Abs(record.EstimatedCostUSD) > 1e-9 {
 		t.Fatalf("estimated_cost_usd=%f", record.EstimatedCostUSD)
 	}
 	if record.TimeToFirstTokenUS != 42123 {
@@ -110,7 +110,7 @@ func TestBuildTraceRecordParsesStreamingAnthropicEnvelopeUsageAndModel(t *testin
 
 	exchange := &proxy.CapturedExchange{
 		Method:       http.MethodPost,
-		Path:         "/anthropic/v1/messages",
+		Path:         "/llm/v1/messages",
 		StatusCode:   http.StatusOK,
 		Streaming:    true,
 		StreamChunks: 3,
@@ -142,7 +142,7 @@ func TestBuildTraceRecordBackfillsTTFTUSFromMS(t *testing.T) {
 
 	exchange := &proxy.CapturedExchange{
 		Method:             http.MethodPost,
-		Path:               "/openai/v1/chat/completions",
+		Path:               "/llm/v1/chat/completions",
 		StatusCode:         http.StatusOK,
 		Streaming:          true,
 		TimeToFirstTokenMS: 42,
@@ -213,7 +213,7 @@ func TestBuildTraceRecordIncludesGatewayIdentityMetadata(t *testing.T) {
 
 	exchange := &proxy.CapturedExchange{
 		Method:             http.MethodPost,
-		Path:               "/openai/v1/chat/completions",
+		Path:               "/llm/v1/chat/completions",
 		StatusCode:         http.StatusOK,
 		GatewayOrgID:       "org-a",
 		GatewayWorkspaceID: "workspace-a",
@@ -259,7 +259,7 @@ func TestBuildTraceRecordIncludesCorrelationIDMetadata(t *testing.T) {
 
 	exchange := &proxy.CapturedExchange{
 		Method:         http.MethodPost,
-		Path:           "/openai/v1/chat/completions",
+		Path:           "/llm/v1/chat/completions",
 		StatusCode:     http.StatusOK,
 		CorrelationID:  "corr-trace-1",
 		ResponseBody:   []byte(`{"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`),
@@ -292,7 +292,7 @@ func TestBuildTraceRecordIncludesLineageMetadataAndCheckpoint(t *testing.T) {
 
 	exchange := &proxy.CapturedExchange{
 		Method:         http.MethodPost,
-		Path:           "/openai/v1/chat/completions",
+		Path:           "/llm/v1/chat/completions",
 		StatusCode:     http.StatusOK,
 		RequestHeaders: headers,
 		ResponseBody:   []byte(`{"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`),
@@ -344,7 +344,7 @@ func TestBuildTraceRecordRedactsSensitiveRequestHeaders(t *testing.T) {
 
 	exchange := &proxy.CapturedExchange{
 		Method:         http.MethodPost,
-		Path:           "/openai/v1/chat/completions",
+		Path:           "/llm/v1/chat/completions",
 		StatusCode:     http.StatusOK,
 		RequestHeaders: headers,
 		ResponseBody:   []byte(`{"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`),
@@ -384,7 +384,7 @@ func TestBuildTraceRecordRedactsSensitiveResponseHeaders(t *testing.T) {
 
 	exchange := &proxy.CapturedExchange{
 		Method:          http.MethodPost,
-		Path:            "/openai/v1/chat/completions",
+		Path:            "/llm/v1/chat/completions",
 		StatusCode:      http.StatusOK,
 		RequestHeaders:  http.Header{"Content-Type": {"application/json"}},
 		ResponseHeaders: responseHeaders,
@@ -418,7 +418,7 @@ func TestBuildTraceRecordPIIRedactsBodiesByDefaultWhenCaptureEnabled(t *testing.
 
 	exchange := &proxy.CapturedExchange{
 		Method:         http.MethodPost,
-		Path:           "/openai/v1/chat/completions",
+		Path:           "/llm/v1/chat/completions",
 		StatusCode:     http.StatusOK,
 		RequestHeaders: http.Header{"Content-Type": {"application/json"}},
 		RequestBody:    []byte(`{"email":"alice@example.com","profile":{"phone":"415-555-1212"},"api_key":"sk_test_1234567890"}`),
@@ -471,7 +471,7 @@ func TestBuildTraceRecordPIIModeOffKeepsBodiesUnchanged(t *testing.T) {
 	respBody := `{"phone":"415-555-1212"}`
 	exchange := &proxy.CapturedExchange{
 		Method:         http.MethodPost,
-		Path:           "/openai/v1/chat/completions",
+		Path:           "/llm/v1/chat/completions",
 		StatusCode:     http.StatusOK,
 		RequestHeaders: http.Header{"Content-Type": {"application/json"}},
 		RequestBody:    []byte(reqBody),
@@ -498,8 +498,8 @@ func TestBuildTraceRecordPIIScopeOverridesModeAndPolicy(t *testing.T) {
 		{
 			Match: config.PIIScopeMatchConfig{
 				WorkspaceID: "workspace-strict",
-				Provider:    "openai",
-				RoutePrefix: "/openai/v1/chat",
+				Provider:    "llm",
+				RoutePrefix: "/llm/v1/chat",
 			},
 			Mode:     config.PIIModeRedactStorage,
 			PolicyID: "workspace-strict/v1",
@@ -508,7 +508,7 @@ func TestBuildTraceRecordPIIScopeOverridesModeAndPolicy(t *testing.T) {
 
 	exchange := &proxy.CapturedExchange{
 		Method:             http.MethodPost,
-		Path:               "/openai/v1/chat/completions",
+		Path:               "/llm/v1/chat/completions",
 		StatusCode:         http.StatusOK,
 		GatewayWorkspaceID: "workspace-strict",
 		RequestHeaders:     http.Header{"Content-Type": {"application/json"}},
@@ -547,8 +547,8 @@ func TestBuildTraceRecordPIIScopeCanDisableRedactionForSpecificKey(t *testing.T)
 		{
 			Match: config.PIIScopeMatchConfig{
 				KeyID:       "key-dev",
-				Provider:    "openai",
-				RoutePrefix: "/openai/v1/chat",
+				Provider:    "llm",
+				RoutePrefix: "/llm/v1/chat",
 			},
 			Mode:     config.PIIModeOff,
 			PolicyID: "key-dev/off",
@@ -557,7 +557,7 @@ func TestBuildTraceRecordPIIScopeCanDisableRedactionForSpecificKey(t *testing.T)
 
 	exchange := &proxy.CapturedExchange{
 		Method:         http.MethodPost,
-		Path:           "/openai/v1/chat/completions",
+		Path:           "/llm/v1/chat/completions",
 		StatusCode:     http.StatusOK,
 		GatewayKeyID:   "key-dev",
 		RequestHeaders: http.Header{"Content-Type": {"application/json"}},
@@ -593,7 +593,7 @@ func TestBuildTraceRecordPIIStageControlsBodyRedaction(t *testing.T) {
 
 	exchange := &proxy.CapturedExchange{
 		Method:         http.MethodPost,
-		Path:           "/openai/v1/chat/completions",
+		Path:           "/llm/v1/chat/completions",
 		StatusCode:     http.StatusOK,
 		RequestHeaders: http.Header{"Content-Type": {"application/json"}},
 		RequestBody:    []byte(`{"email":"alice@example.com"}`),
@@ -618,7 +618,7 @@ func TestBuildTraceRecordSetsRedactionTruncatedMetadata(t *testing.T) {
 
 	exchange := &proxy.CapturedExchange{
 		Method:               http.MethodPost,
-		Path:                 "/openai/v1/chat/completions",
+		Path:                 "/llm/v1/chat/completions",
 		StatusCode:           http.StatusOK,
 		RequestHeaders:       http.Header{"Content-Type": {"application/json"}},
 		RequestBody:          []byte(`{"email":"alice@example.com"}`),
@@ -646,7 +646,7 @@ func TestBuildTraceRecordRedactStorageDropsBodiesOnRedactionError(t *testing.T) 
 
 	exchange := &proxy.CapturedExchange{
 		Method:         http.MethodPost,
-		Path:           "/openai/v1/chat/completions",
+		Path:           "/llm/v1/chat/completions",
 		StatusCode:     http.StatusOK,
 		RequestHeaders: http.Header{"Content-Type": {"text/plain"}},
 		RequestBody:    []byte{0xff, 0xfe, 0xfd},

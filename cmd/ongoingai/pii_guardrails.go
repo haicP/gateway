@@ -35,7 +35,10 @@ func piiGuardrailMiddleware(cfg config.Config, logger *slog.Logger, next http.Ha
 
 	maxBodySize := cfg.Tracing.BodyMaxSize
 	if maxBodySize <= 0 {
-		maxBodySize = 1 << 20
+		// Unlimited storage capture must not become unlimited synchronous PII
+		// inspection on the proxy path. Guardrail modes keep a conservative
+		// inspection cap and fail closed when the request exceeds it.
+		maxBodySize = metadataParseMaxSize
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

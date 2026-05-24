@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -190,6 +191,93 @@ func TestPostgresStoreWritesAndQueriesTraces(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInvalidCursor) {
 		t.Fatalf("invalid cursor error=%v, want ErrInvalidCursor", err)
+	}
+}
+
+func TestPostgresStoreWritesCompressedSpoolBodiesAndQueriesSummaries(t *testing.T) {
+	store := newPostgresTestStore(t)
+
+	idPrefix := fmt.Sprintf("trace-pg-body-%d-", time.Now().UnixNano())
+	cleanupPostgresTestTraces(t, store, idPrefix)
+
+	requestBody := strings.Repeat("request body text\n", 128*1024)
+	responseBody := strings.Repeat("response body text\n", 64*1024)
+	requestPath := filepath.Join(t.TempDir(), "request.txt")
+	responsePath := filepath.Join(t.TempDir(), "response.txt")
+	if err := os.WriteFile(requestPath, []byte(requestBody), 0o600); err != nil {
+		t.Fatalf("write request body fixture: %v", err)
+	}
+	if err := os.WriteFile(responsePath, []byte(responseBody), 0o600); err != nil {
+		t.Fatalf("write response body fixture: %v", err)
+	}
+
+	traceID := idPrefix + "1"
+	if err := store.WriteTrace(context.Background(), &Trace{
+		ID:                    traceID,
+		OrgID:                 "org-body",
+		WorkspaceID:           "workspace-body",
+		Provider:              "openai",
+		Model:                 "gpt-4o-mini",
+		RequestMethod:         "POST",
+		RequestPath:           "/openai/v1/chat/completions",
+		RequestBody:           "must not be stored in traces",
+		RequestBodyPath:       requestPath,
+		RequestBodyBytes:      int64(len(requestBody)),
+		RequestBodyTruncated:  false,
+		ResponseStatus:        200,
+		ResponseBody:          "must not be stored in traces",
+		ResponseBodyPath:      responsePath,
+		ResponseBodyBytes:     int64(len(responseBody)),
+		ResponseBodyTruncated: true,
+		Metadata:              `{"body_pii_status":"skipped_large_body"}`,
+		CreatedAt:             time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("WriteTrace() error: %v", err)
+	}
+
+	var mainRequestBody, mainResponseBody string
+	if err := store.db.QueryRowContext(context.Background(), `
+	SELECT COALESCE(request_body, ''), COALESCE(response_body, '')
+	FROM traces
+	WHERE id = $1`, traceID).Scan(&mainRequestBody, &mainResponseBody); err != nil {
+		t.Fatalf("query main trace body columns: %v", err)
+	}
+	if mainRequestBody != "" || mainResponseBody != "" {
+		t.Fatalf("main trace stored bodies: request=%q response=%q", mainRequestBody, mainResponseBody)
+	}
+
+	var requestCompressedBytes, responseCompressedBytes int64
+	if err := store.db.QueryRowContext(context.Background(), `
+	SELECT request_body_compressed_size_bytes, response_body_compressed_size_bytes
+	FROM trace_bodies
+	WHERE trace_id = $1`, traceID).Scan(&requestCompressedBytes, &responseCompressedBytes); err != nil {
+		t.Fatalf("query trace_bodies: %v", err)
+	}
+	if requestCompressedBytes <= 0 || responseCompressedBytes <= 0 {
+		t.Fatalf("compressed sizes request=%d response=%d, want positive", requestCompressedBytes, responseCompressedBytes)
+	}
+
+	got, err := store.GetTrace(context.Background(), traceID)
+	if err != nil {
+		t.Fatalf("GetTrace() error: %v", err)
+	}
+	if got.RequestBody != requestBody || got.ResponseBody != responseBody {
+		t.Fatalf("GetTrace() did not restore compressed bodies")
+	}
+
+	result, err := store.QueryTraces(context.Background(), TraceFilter{
+		OrgID:       "org-body",
+		WorkspaceID: "workspace-body",
+		Limit:       1,
+	})
+	if err != nil {
+		t.Fatalf("QueryTraces() error: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].ID != traceID {
+		t.Fatalf("QueryTraces() returned unexpected items: %#v", result.Items)
+	}
+	if result.Items[0].RequestBody != "" || result.Items[0].ResponseBody != "" {
+		t.Fatalf("QueryTraces() returned body fields: request=%d response=%d", len(result.Items[0].RequestBody), len(result.Items[0].ResponseBody))
 	}
 }
 

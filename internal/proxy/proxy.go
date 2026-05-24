@@ -68,8 +68,7 @@ func NewHandlerWithOptions(routes []Route, logger *slog.Logger, next http.Handle
 
 func DefaultRoutes() []Route {
 	return []Route{
-		{Prefix: "/openai", Upstream: "https://api.openai.com"},
-		{Prefix: "/anthropic", Upstream: "https://api.anthropic.com"},
+		{Prefix: "/llm", Upstream: "https://api.openai.com"},
 	}
 }
 

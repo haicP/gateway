@@ -163,7 +163,7 @@ func resolveDebugSourceTrace(ctx context.Context, store trace.TraceStore, select
 	if result == nil || len(result.Items) == 0 {
 		return nil, nil
 	}
-	return result.Items[0], nil
+	return store.GetTrace(ctx, result.Items[0].ID)
 }
 
 func buildDebugDocument(
@@ -221,6 +221,13 @@ func buildDebugDocument(
 		items = append(items, source)
 	}
 	trace.SortLineageTraces(items)
+	if includeBodies || includeDiff {
+		var err error
+		items, err = hydrateDebugTraceBodies(ctx, store, items)
+		if err != nil {
+			return debugDocument{}, err
+		}
+	}
 
 	checkpoints := make([]debugTraceCheckpoint, 0, len(items))
 	for i, item := range items {
@@ -261,6 +268,22 @@ func buildDebugDocument(
 		},
 		Diffs: diffs,
 	}, nil
+}
+
+func hydrateDebugTraceBodies(ctx context.Context, store trace.TraceStore, items []*trace.Trace) ([]*trace.Trace, error) {
+	hydrated := make([]*trace.Trace, 0, len(items))
+	for _, item := range items {
+		if item == nil || strings.TrimSpace(item.ID) == "" {
+			hydrated = append(hydrated, item)
+			continue
+		}
+		full, err := store.GetTrace(ctx, item.ID)
+		if err != nil {
+			return nil, err
+		}
+		hydrated = append(hydrated, full)
+	}
+	return hydrated, nil
 }
 
 func debugSelectionIdentifier(selection debugSelection) string {

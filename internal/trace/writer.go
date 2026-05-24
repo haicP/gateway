@@ -438,6 +438,7 @@ func (w *Writer) flushBatch(ctx context.Context, batch []*Trace) {
 	if len(batch) == 0 {
 		return
 	}
+	defer cleanupTraceBodyFiles(batch)
 	start := time.Now()
 	if m := w.loadMetrics(); m != nil && m.OnWriteStart != nil {
 		droppedBefore := w.writeDroppedTotal.Load()
@@ -498,6 +499,14 @@ func (w *Writer) flushBatch(ctx context.Context, batch []*Trace) {
 	} else {
 		if m := w.loadMetrics(); m != nil && m.OnWriteSuccess != nil {
 			m.OnWriteSuccess(len(batch))
+		}
+	}
+}
+
+func cleanupTraceBodyFiles(batch []*Trace) {
+	for _, item := range batch {
+		if item != nil {
+			item.CleanupBodyFiles()
 		}
 	}
 }

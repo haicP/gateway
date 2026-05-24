@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -224,7 +225,8 @@ func TestBodyCaptureMiddlewareTruncatesBodies(t *testing.T) {
 
 	var captured *CapturedExchange
 
-	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
 		_, _ = w.Write([]byte("abcdef"))
 	})
 
@@ -253,6 +255,71 @@ func TestBodyCaptureMiddlewareTruncatesBodies(t *testing.T) {
 	}
 	if !captured.ResponseBodyTruncated {
 		t.Fatalf("response body truncated=%v, want true", captured.ResponseBodyTruncated)
+	}
+}
+
+func TestBodyCaptureMiddlewareUnlimitedCaptureSpoolsLargeBodies(t *testing.T) {
+	t.Parallel()
+
+	var captured *CapturedExchange
+	requestBody := strings.Repeat("0123456789", 128*1024)
+	responseBody := strings.Repeat("abcdefghij", 128*1024)
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		if string(body) != requestBody {
+			t.Fatalf("handler request body mismatch")
+		}
+		_, _ = w.Write([]byte(responseBody))
+	})
+
+	handler := BodyCaptureMiddleware(BodyCaptureOptions{
+		Enabled:      true,
+		MaxBodySize:  0,
+		ParseMaxSize: 1024,
+	}, func(exchange *CapturedExchange) {
+		captured = exchange
+	}, next)
+
+	req := httptest.NewRequest(http.MethodPost, "/openai/v1/chat/completions", strings.NewReader(requestBody))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if captured == nil {
+		t.Fatal("capture sink was not called")
+	}
+	if captured.RequestBodyTruncated || captured.ResponseBodyTruncated {
+		t.Fatalf("unexpected truncation request=%v response=%v", captured.RequestBodyTruncated, captured.ResponseBodyTruncated)
+	}
+	if got := string(captured.RequestBody); got != requestBody[:1024] {
+		t.Fatalf("request parse prefix length/value mismatch: len=%d", len(got))
+	}
+	if got := string(captured.ResponseBody); got != responseBody[:1024] {
+		t.Fatalf("response parse prefix length/value mismatch: len=%d", len(got))
+	}
+	if captured.RequestBodyPath == "" || captured.ResponseBodyPath == "" {
+		t.Fatalf("expected spooled paths, got request=%q response=%q", captured.RequestBodyPath, captured.ResponseBodyPath)
+	}
+	t.Cleanup(captured.CleanupBodyFiles)
+	if captured.RequestBodyBytes != int64(len(requestBody)) || captured.ResponseBodyBytes != int64(len(responseBody)) {
+		t.Fatalf("captured bytes request=%d response=%d", captured.RequestBodyBytes, captured.ResponseBodyBytes)
+	}
+	requestFile, err := os.ReadFile(captured.RequestBodyPath)
+	if err != nil {
+		t.Fatalf("read spooled request body: %v", err)
+	}
+	responseFile, err := os.ReadFile(captured.ResponseBodyPath)
+	if err != nil {
+		t.Fatalf("read spooled response body: %v", err)
+	}
+	if string(requestFile) != requestBody || string(responseFile) != responseBody {
+		t.Fatal("spooled body content mismatch")
+	}
+	if rec.Body.String() != responseBody {
+		t.Fatal("client response body mismatch")
 	}
 }
 
@@ -442,7 +509,8 @@ func TestBodyCaptureMiddlewareParseOnlyModeCapturesForTransientParsing(t *testin
 
 	var captured *CapturedExchange
 
-	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"usage":{"input_tokens":10,"output_tokens":5}}`))
@@ -502,7 +570,7 @@ func TestCaptureResponseWriterCapturesPartialNonStreamingWrite(t *testing.T) {
 		failBytes: 3,
 		writeErr:  io.ErrShortWrite,
 	}
-	recorder := newCaptureResponseWriter(base, 1024, true, time.Now().Add(-5*time.Millisecond))
+	recorder := newCaptureResponseWriter(base, 1024, 1024, true, false, time.Now().Add(-5*time.Millisecond))
 
 	n, err := recorder.Write([]byte("abcdef"))
 	if n != 3 {
@@ -530,7 +598,7 @@ func TestCaptureResponseWriterCapturesPartialStreamingWrite(t *testing.T) {
 		failBytes: 5,
 		writeErr:  io.ErrUnexpectedEOF,
 	}
-	recorder := newCaptureResponseWriter(base, 1024, true, time.Now().Add(-5*time.Millisecond))
+	recorder := newCaptureResponseWriter(base, 1024, 1024, true, false, time.Now().Add(-5*time.Millisecond))
 	recorder.Header().Set("Content-Type", "text/event-stream")
 	recorder.WriteHeader(http.StatusOK)
 
@@ -563,7 +631,7 @@ func TestCaptureResponseWriterTruncatesStreamingCaptureBuffer(t *testing.T) {
 	t.Parallel()
 
 	base := &scriptedWriteResponseWriter{}
-	recorder := newCaptureResponseWriter(base, 7, true, time.Now().Add(-5*time.Millisecond))
+	recorder := newCaptureResponseWriter(base, 7, 7, true, false, time.Now().Add(-5*time.Millisecond))
 	recorder.Header().Set("Content-Type", "text/event-stream")
 	recorder.WriteHeader(http.StatusOK)
 

@@ -40,14 +40,44 @@ type StorageConfig struct {
 	DSN    string `yaml:"dsn"`
 }
 
-type ProvidersConfig struct {
-	OpenAI    ProviderConfig `yaml:"openai"`
-	Anthropic ProviderConfig `yaml:"anthropic"`
-}
+type ProvidersConfig map[string]ProviderConfig
 
 type ProviderConfig struct {
 	Upstream string `yaml:"upstream"`
 	Prefix   string `yaml:"prefix"`
+}
+
+func (providers *ProvidersConfig) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("providers must be a mapping")
+	}
+
+	next := ProvidersConfig{}
+	for i := 0; i < len(value.Content); i += 2 {
+		key := strings.TrimSpace(value.Content[i].Value)
+		providerNode := value.Content[i+1]
+		if providerNode.Kind != yaml.MappingNode {
+			return fmt.Errorf("providers.%s must be a mapping", key)
+		}
+
+		var provider ProviderConfig
+		for j := 0; j < len(providerNode.Content); j += 2 {
+			field := strings.TrimSpace(providerNode.Content[j].Value)
+			fieldNode := providerNode.Content[j+1]
+			switch field {
+			case "upstream":
+				provider.Upstream = fieldNode.Value
+			case "prefix":
+				provider.Prefix = fieldNode.Value
+			default:
+				return fmt.Errorf("field %s not found in type config.ProviderConfig", field)
+			}
+		}
+		next[key] = provider
+	}
+
+	*providers = next
+	return nil
 }
 
 type TracingConfig struct {
@@ -281,13 +311,9 @@ func Default() Config {
 			Path:   "./data/ongoingai.db",
 		},
 		Providers: ProvidersConfig{
-			OpenAI: ProviderConfig{
+			"llm": ProviderConfig{
 				Upstream: "https://api.openai.com",
-				Prefix:   "/openai",
-			},
-			Anthropic: ProviderConfig{
-				Upstream: "https://api.anthropic.com",
-				Prefix:   "/anthropic",
+				Prefix:   "/llm",
 			},
 		},
 		Tracing: TracingConfig{
@@ -412,10 +438,8 @@ func Validate(cfg Config) error {
 		return fmt.Errorf("storage.driver must be one of sqlite, postgres (got %q)", cfg.Storage.Driver)
 	}
 
-	if err := validateProvider("providers.openai", cfg.Providers.OpenAI); err != nil {
-		return err
-	}
-	if err := validateProvider("providers.anthropic", cfg.Providers.Anthropic); err != nil {
+	providerPrefixes, err := validateProviders(cfg.Providers)
+	if err != nil {
 		return err
 	}
 
@@ -431,10 +455,59 @@ func Validate(cfg Config) error {
 	if err := validatePIIScopes(cfg.PII.Scopes); err != nil {
 		return err
 	}
-	if err := validateOTelConfig(cfg.Observability.OTel); err != nil {
+	if err := validateOTelConfig(cfg.Observability.OTel, providerPrefixes); err != nil {
 		return err
 	}
 
+	return nil
+}
+
+func validateProviders(providers ProvidersConfig) ([]string, error) {
+	if len(providers) == 0 {
+		return nil, errors.New("providers must configure at least one provider")
+	}
+
+	prefixes := make([]string, 0, len(providers))
+	for name, provider := range providers {
+		normalizedName := strings.TrimSpace(name)
+		if err := validateProviderName(normalizedName); err != nil {
+			return nil, err
+		}
+		configName := "providers." + normalizedName
+		if err := validateProvider(configName, provider); err != nil {
+			return nil, err
+		}
+		prefix := pathutil.NormalizePrefix(provider.Prefix)
+		if prefix == "/" {
+			return nil, fmt.Errorf("%s.prefix must not be root ('/')", configName)
+		}
+		if prefixesOverlap(prefix, "/api") {
+			return nil, fmt.Errorf("%s.prefix must not overlap with /api routes (got %q)", configName, provider.Prefix)
+		}
+		for _, existing := range prefixes {
+			if prefixesOverlap(prefix, existing) {
+				return nil, fmt.Errorf("provider prefixes must not overlap (got %q and %q)", existing, prefix)
+			}
+		}
+		prefixes = append(prefixes, prefix)
+	}
+
+	return prefixes, nil
+}
+
+func validateProviderName(name string) error {
+	if name == "" {
+		return errors.New("provider name must not be empty")
+	}
+	for idx, r := range name {
+		valid := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-'
+		if !valid {
+			return fmt.Errorf("provider name %q must contain only lowercase letters, numbers, hyphen, or underscore", name)
+		}
+		if idx == 0 && !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
+			return fmt.Errorf("provider name %q must start with a lowercase letter or number", name)
+		}
+	}
 	return nil
 }
 
@@ -464,7 +537,7 @@ func validatePIIScopes(scopes []PIIScopeConfig) error {
 	return nil
 }
 
-func validateOTelConfig(cfg OTelConfig) error {
+func validateOTelConfig(cfg OTelConfig, providerPrefixes []string) error {
 	if !cfg.Enabled {
 		return nil
 	}
@@ -491,13 +564,20 @@ func validateOTelConfig(cfg OTelConfig) error {
 		if !strings.HasPrefix(path, "/") {
 			return fmt.Errorf("observability.otel.prometheus_path must start with '/' (got %q)", cfg.PrometheusPath)
 		}
-		for _, reserved := range []string{"/api", "/openai", "/anthropic"} {
-			if strings.HasPrefix(path, reserved) {
+		reservedPrefixes := append([]string{"/api"}, providerPrefixes...)
+		for _, reserved := range reservedPrefixes {
+			if prefixesOverlap(path, reserved) {
 				return fmt.Errorf("observability.otel.prometheus_path must not overlap with %s (got %q)", reserved, cfg.PrometheusPath)
 			}
 		}
 	}
 	return nil
+}
+
+func prefixesOverlap(left, right string) bool {
+	left = pathutil.NormalizePrefix(left)
+	right = pathutil.NormalizePrefix(right)
+	return pathutil.HasPathPrefix(left, right) || pathutil.HasPathPrefix(right, left)
 }
 
 func validateProvider(name string, provider ProviderConfig) error {
@@ -547,11 +627,10 @@ func applyEnv(cfg *Config) error {
 		cfg.Storage.DSN = storageDSN
 	}
 
-	if openAIUpstream := os.Getenv("ONGOINGAI_OPENAI_UPSTREAM"); openAIUpstream != "" {
-		cfg.Providers.OpenAI.Upstream = openAIUpstream
-	}
-	if anthropicUpstream := os.Getenv("ONGOINGAI_ANTHROPIC_UPSTREAM"); anthropicUpstream != "" {
-		cfg.Providers.Anthropic.Upstream = anthropicUpstream
+	if llmUpstream := os.Getenv("ONGOINGAI_LLM_UPSTREAM"); llmUpstream != "" {
+		provider := cfg.Providers["llm"]
+		provider.Upstream = llmUpstream
+		cfg.Providers["llm"] = provider
 	}
 
 	if captureBodies := os.Getenv("ONGOINGAI_CAPTURE_BODIES"); captureBodies != "" {

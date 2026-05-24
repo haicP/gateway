@@ -39,12 +39,10 @@ func TestRouterMatchPathBoundaries(t *testing.T) {
 		path      string
 		wantMatch bool
 	}{
-		{path: "/openai", wantMatch: true},
-		{path: "/openai/v1/chat/completions", wantMatch: true},
-		{path: "/openaiish", wantMatch: false},
-		{path: "/anthropic", wantMatch: true},
-		{path: "/anthropic/v1/messages", wantMatch: true},
-		{path: "/anthropicized", wantMatch: false},
+		{path: "/llm", wantMatch: true},
+		{path: "/llm/v1/chat/completions", wantMatch: true},
+		{path: "/llm/v1/messages", wantMatch: true},
+		{path: "/llmish", wantMatch: false},
 		{path: "/v1/chat/completions", wantMatch: false},
 	}
 
@@ -122,6 +120,62 @@ func TestHandlerProxiesAndStripsPrefix(t *testing.T) {
 	}
 	if gotHost != strings.TrimPrefix(upstream.URL, "http://") {
 		t.Fatalf("upstream host %q, want %q", gotHost, strings.TrimPrefix(upstream.URL, "http://"))
+	}
+}
+
+func TestHandlerProxiesLLMCompatibilityPaths(t *testing.T) {
+	t.Parallel()
+
+	var gotPath string
+	var gotQuery string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler, err := NewHandler([]Route{
+		{Prefix: "/llm", Upstream: upstream.URL},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), http.NotFoundHandler())
+	if err != nil {
+		t.Fatalf("NewHandler error: %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		method    string
+		path      string
+		wantPath  string
+		wantQuery string
+	}{
+		{name: "claude messages", method: http.MethodPost, path: "/llm/v1/messages", wantPath: "/v1/messages"},
+		{name: "openai responses subpath", method: http.MethodPost, path: "/llm/v1/responses/compact", wantPath: "/v1/responses/compact"},
+		{name: "openai chat completions", method: http.MethodPost, path: "/llm/v1/chat/completions", wantPath: "/v1/chat/completions"},
+		{name: "openai image edits", method: http.MethodPost, path: "/llm/v1/images/edits", wantPath: "/v1/images/edits"},
+		{name: "gemini stream", method: http.MethodPost, path: "/llm/v1beta/models/gemini-pro:streamGenerateContent?alt=sse", wantPath: "/v1beta/models/gemini-pro:streamGenerateContent", wantQuery: "alt=sse"},
+		{name: "antigravity messages", method: http.MethodPost, path: "/llm/antigravity/v1/messages", wantPath: "/antigravity/v1/messages"},
+		{name: "codex responses", method: http.MethodGet, path: "/llm/backend-api/codex/responses", wantPath: "/backend-api/codex/responses"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotPath = ""
+			gotQuery = ""
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d, want %d", rec.Code, http.StatusOK)
+			}
+			if gotPath != tt.wantPath {
+				t.Fatalf("upstream path=%q, want %q", gotPath, tt.wantPath)
+			}
+			if gotQuery != tt.wantQuery {
+				t.Fatalf("upstream query=%q, want %q", gotQuery, tt.wantQuery)
+			}
+		})
 	}
 }
 

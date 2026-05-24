@@ -59,6 +59,9 @@ parses provider responses to extract model and usage metadata.
   `capture_bodies=true` with `pii.mode=redact_storage`.
 - Lower body risk profile:
   reduce `body_max_size`.
+- Full body backup capture:
+  set `body_max_size: 0`; large Postgres bodies are stored outside the trace
+  summary row and compressed asynchronously by the trace writer.
 
 ## Example setups
 
@@ -83,7 +86,7 @@ pii:
 
 ## Validation checklist
 
-1. Send one proxied request through `/openai/...` or `/anthropic/...`.
+1. Send one proxied request through `/llm/...`.
 2. If `auth.enabled=true`, include your gateway key header on API reads.
    Default header name is `X-OngoingAI-Gateway-Key`.
 3. Query traces:
@@ -120,7 +123,7 @@ You should see:
 - Symptom: Trace list is empty.
 - Cause: Requests did not go through provider routes, or upstream request failed
   before capture.
-- Fix: Send traffic through `/openai/...` or `/anthropic/...`, then query traces
+- Fix: Send traffic through `/llm/...`, then query traces
   again.
 
 ### Logs show `trace queue is full; dropping trace`

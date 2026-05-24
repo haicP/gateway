@@ -3,6 +3,8 @@ package trace
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -247,6 +249,28 @@ func TestWriterUsesBatchWriteForMultipleQueuedTraces(t *testing.T) {
 	}
 	if store.count != 4 {
 		t.Fatalf("write count=%d, want 4", store.count)
+	}
+}
+
+func TestWriterCleansUpSpoolFilesAfterFlush(t *testing.T) {
+	t.Parallel()
+
+	store := &testStore{}
+	writer := NewWriter(store, 8)
+	writer.Start(context.Background())
+
+	bodyPath := filepath.Join(t.TempDir(), "request-body.txt")
+	if err := os.WriteFile(bodyPath, []byte("large body"), 0o600); err != nil {
+		t.Fatalf("write body fixture: %v", err)
+	}
+	if !writer.Enqueue(&Trace{ID: "trace-with-spool", RequestBodyPath: bodyPath}) {
+		t.Fatal("Enqueue()=false, want true")
+	}
+	if err := writer.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() error: %v", err)
+	}
+	if _, err := os.Stat(bodyPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("spool file stat error=%v, want os.ErrNotExist", err)
 	}
 }
 

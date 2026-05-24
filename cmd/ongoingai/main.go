@@ -441,10 +441,7 @@ func runServe(args []string) int {
 	if otelRuntime != nil {
 		proxyOptions.Transport = otelRuntime.WrapHTTPTransport(http.DefaultTransport)
 	}
-	proxyHandler, err := proxy.NewHandlerWithOptions([]proxy.Route{
-		{Prefix: cfg.Providers.OpenAI.Prefix, Upstream: cfg.Providers.OpenAI.Upstream},
-		{Prefix: cfg.Providers.Anthropic.Prefix, Upstream: cfg.Providers.Anthropic.Upstream},
-	}, logger, apiHandler, proxyOptions)
+	proxyHandler, err := proxy.NewHandlerWithOptions(proxyRoutesFromConfig(cfg), logger, apiHandler, proxyOptions)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to configure proxy routes: %v\n", err)
 		return 1
@@ -456,6 +453,7 @@ func runServe(args []string) int {
 
 	captureSink := func(exchange *proxy.CapturedExchange) {
 		if !shouldCaptureTrace(exchange.Path) {
+			exchange.CleanupBodyFiles()
 			return
 		}
 
@@ -498,6 +496,7 @@ func runServe(args []string) int {
 		endEnqueueSpan(queued)
 
 		if !queued {
+			traceRecord.CleanupBodyFiles()
 			logger.WarnContext(enqueueCtx,
 				"trace queue is full; dropping trace",
 				"correlation_id", strings.TrimSpace(exchange.CorrelationID),
@@ -532,9 +531,10 @@ func runServe(args []string) int {
 		)
 	}
 	captureHandler := proxy.BodyCaptureMiddleware(proxy.BodyCaptureOptions{
-		Enabled:     cfg.Tracing.CaptureBodies,
-		ParseBodies: true,
-		MaxBodySize: cfg.Tracing.BodyMaxSize,
+		Enabled:      cfg.Tracing.CaptureBodies,
+		ParseBodies:  true,
+		MaxBodySize:  cfg.Tracing.BodyMaxSize,
+		ParseMaxSize: metadataParseMaxSize,
 	}, captureSink, guardedProxyHandler)
 	if otelRuntime != nil {
 		captureHandler = otelRuntime.SpanEnrichmentMiddleware(captureHandler)
@@ -552,11 +552,10 @@ func runServe(args []string) int {
 		},
 	})
 	authOptions := auth.MiddlewareOptions{
-		APIPrefix:       "/api",
-		OpenAIPrefix:    cfg.Providers.OpenAI.Prefix,
-		AnthropicPrefix: cfg.Providers.Anthropic.Prefix,
-		ProxyLimiter:    gatewayLimiter.CheckRequest,
-		AuditRecorder:   proxyAuditRecorder,
+		APIPrefix:     "/api",
+		Providers:     authProviderRoutesFromConfig(cfg),
+		ProxyLimiter:  gatewayLimiter.CheckRequest,
+		AuditRecorder: proxyAuditRecorder,
 	}
 	if usageTracker, ok := gatewayKeyStore.(configstore.GatewayKeyUsageTracker); ok {
 		authOptions.ProxyUsageRecorder = newGatewayKeyProxyUsageRecorder(logger, usageTracker)
@@ -681,7 +680,8 @@ func shellInitScript(cfg config.Config) string {
 
 func gatewayProviderURLs(cfg config.Config) (string, string) {
 	base := gatewayBaseURL(cfg)
-	return base + openAIBasePath(cfg.Providers.OpenAI.Prefix), base + pathutil.NormalizePrefix(cfg.Providers.Anthropic.Prefix)
+	prefix := primaryProviderPrefix(cfg)
+	return base + openAIBasePath(prefix), base + prefix
 }
 
 func gatewayBaseURL(cfg config.Config) string {
@@ -702,6 +702,17 @@ func openAIBasePath(prefix string) string {
 		return p
 	}
 	return strings.TrimRight(p, "/") + "/v1"
+}
+
+func primaryProviderPrefix(cfg config.Config) string {
+	if provider, ok := cfg.Providers["llm"]; ok {
+		return pathutil.NormalizePrefix(provider.Prefix)
+	}
+	names := sortedProviderNames(cfg.Providers)
+	if len(names) == 0 {
+		return "/llm"
+	}
+	return pathutil.NormalizePrefix(cfg.Providers[names[0]].Prefix)
 }
 
 func printUsage(out *os.File) {
@@ -979,24 +990,52 @@ func shutdownOpenTelemetry(logger *slog.Logger, runtime *observability.Runtime, 
 }
 
 func configuredProviderSummaries(cfg config.Config) []string {
-	providers := []struct {
-		name   string
-		config config.ProviderConfig
-	}{
-		{name: "openai", config: cfg.Providers.OpenAI},
-		{name: "anthropic", config: cfg.Providers.Anthropic},
-	}
-
-	out := make([]string, 0, len(providers))
-	for _, provider := range providers {
-		prefix := strings.TrimSpace(provider.config.Prefix)
-		upstream := strings.TrimSpace(provider.config.Upstream)
+	names := sortedProviderNames(cfg.Providers)
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		provider := cfg.Providers[name]
+		prefix := strings.TrimSpace(provider.Prefix)
+		upstream := strings.TrimSpace(provider.Upstream)
 		if prefix == "" || upstream == "" {
 			continue
 		}
-		out = append(out, fmt.Sprintf("%s:%s->%s", provider.name, pathutil.NormalizePrefix(prefix), upstream))
+		out = append(out, fmt.Sprintf("%s:%s->%s", name, pathutil.NormalizePrefix(prefix), upstream))
 	}
 	return out
+}
+
+func proxyRoutesFromConfig(cfg config.Config) []proxy.Route {
+	names := sortedProviderNames(cfg.Providers)
+	routes := make([]proxy.Route, 0, len(names))
+	for _, name := range names {
+		provider := cfg.Providers[name]
+		routes = append(routes, proxy.Route{
+			Prefix:   provider.Prefix,
+			Upstream: provider.Upstream,
+		})
+	}
+	return routes
+}
+
+func authProviderRoutesFromConfig(cfg config.Config) []auth.ProviderRoute {
+	names := sortedProviderNames(cfg.Providers)
+	routes := make([]auth.ProviderRoute, 0, len(names))
+	for _, name := range names {
+		routes = append(routes, auth.ProviderRoute{
+			Name:   name,
+			Prefix: cfg.Providers[name].Prefix,
+		})
+	}
+	return routes
+}
+
+func sortedProviderNames(providers config.ProvidersConfig) []string {
+	names := make([]string, 0, len(providers))
+	for name := range providers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func requestCorrelationID(req *http.Request) string {

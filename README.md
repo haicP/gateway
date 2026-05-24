@@ -39,19 +39,19 @@ eval "$(ongoingai shell-init)"
 Or set manually:
 
 ```bash
-export OPENAI_BASE_URL=http://localhost:8080/openai/v1
-export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
+export OPENAI_BASE_URL=http://localhost:8080/llm/v1
+export ANTHROPIC_BASE_URL=http://localhost:8080/llm
 ```
 
-### 3) Send requests through both providers
+### 3) Send requests through the gateway
 
 ```bash
-curl http://localhost:8080/openai/v1/chat/completions \
+curl http://localhost:8080/llm/v1/chat/completions \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Reply with ok"}]}'
 
-curl http://localhost:8080/anthropic/v1/messages \
+curl http://localhost:8080/llm/v1/messages \
   -H "x-api-key: $ANTHROPIC_API_KEY" \
   -H "anthropic-version: 2023-06-01" \
   -H "content-type: application/json" \
@@ -142,7 +142,7 @@ flowchart LR
 ## Security & Privacy
 
 - **API keys:** Forwarded to the upstream provider, never stored. Only hashed identifiers are kept in traces.
-- **Request/response bodies:** Off by default. Opt in with `capture_bodies: true` and cap size via `body_max_size`.
+- **Request/response bodies:** Off by default. Opt in with `capture_bodies: true` and cap size via `body_max_size`; set `body_max_size: 0` for unbounded storage capture.
 - **Metadata:** Always captured (model, tokens, latency, cost) regardless of body capture settings.
 - **Storage:** SQLite file stored locally. Ensure appropriate file permissions on `data/ongoingai.db`.
 - **Gateway auth:** Optional team/role-based key auth is available via config and should be enabled for shared/team deployments.
@@ -177,7 +177,7 @@ ongoingai wrap -- python my_ai_script.py
 ```python
 # OpenAI
 from openai import OpenAI
-client = OpenAI(base_url="http://localhost:8080/openai/v1")
+client = OpenAI(base_url="http://localhost:8080/llm/v1")
 response = client.chat.completions.create(
     model="gpt-4o",
     messages=[{"role": "user", "content": "Hello"}]
@@ -185,7 +185,7 @@ response = client.chat.completions.create(
 
 # Anthropic
 import anthropic
-client = anthropic.Anthropic(base_url="http://localhost:8080/anthropic")
+client = anthropic.Anthropic(base_url="http://localhost:8080/llm")
 message = client.messages.create(
     model="claude-sonnet-4-latest",
     max_tokens=1024,
@@ -201,11 +201,11 @@ Works automatically with any tool that supports custom base URLs:
 
 | Tool | Env Var / Setting | Value |
 |------|-------------------|-------|
-| Claude Code | `ANTHROPIC_BASE_URL` | `http://localhost:8080/anthropic` |
-| OpenAI Codex CLI | `OPENAI_BASE_URL` | `http://localhost:8080/openai/v1` |
-| Aider | `OPENAI_API_BASE` or `--openai-api-base` | `http://localhost:8080/openai/v1` |
-| Continue (VS Code) | `apiBase` in config | `http://localhost:8080/openai/v1` |
-| LangChain | `base_url` on LLM client | `http://localhost:8080/openai/v1` |
+| Claude Code | `ANTHROPIC_BASE_URL` | `http://localhost:8080/llm` |
+| OpenAI Codex CLI | `OPENAI_BASE_URL` | `http://localhost:8080/llm/v1` |
+| Aider | `OPENAI_API_BASE` or `--openai-api-base` | `http://localhost:8080/llm/v1` |
+| Continue (VS Code) | `apiBase` in config | `http://localhost:8080/llm/v1` |
+| LangChain | `base_url` on LLM client | `http://localhost:8080/llm/v1` |
 | Custom apps | Set base URL on any OpenAI/Anthropic SDK | See above |
 
 **Note:** OpenAI-compatible tools generally expect `/v1` in the base URL. Anthropic SDKs do not.
@@ -227,16 +227,13 @@ storage:
   # dsn: postgres://...         # Postgres connection string
 
 providers:
-  openai:
+  llm:
     upstream: https://api.openai.com
-    prefix: /openai
-  anthropic:
-    upstream: https://api.anthropic.com
-    prefix: /anthropic
+    prefix: /llm
 
 tracing:
   capture_bodies: false         # Off by default
-  body_max_size: 1048576        # 1MB default
+  body_max_size: 1048576        # 1MB default; 0 means unbounded capture
 
 auth:
   enabled: false
