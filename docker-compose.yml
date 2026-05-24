@@ -10,10 +10,15 @@ services:
     image: llmgateway:llm-route-test
     container_name: llmgateway-running
     environment:
+      # 容器内端口
       ONGOINGAI_HOST: 0.0.0.0
-      ONGOINGAI_PORT: ${ONGOINGAI_CONTAINER_PORT:-8080}
+      ONGOINGAI_PORT: ${ONGOINGAI_CONTAINER_PORT:-8070}
+      # S3凭证
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      # AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
     ports:
-      - "${ONGOINGAI_HTTP_PORT:-18080}:${ONGOINGAI_CONTAINER_PORT:-8080}"
+      - "${ONGOINGAI_HTTP_PORT:-8070}:${ONGOINGAI_CONTAINER_PORT:-8070}"
     volumes:
       - ./ongoingai.yaml:/app/ongoingai.yaml:ro
       - ./data:/app/data

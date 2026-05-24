@@ -3,42 +3,42 @@ server:
   # 监听地址。容器部署或需要局域网访问时使用 0.0.0.0。
   host: 0.0.0.0
   # 监听端口。容器内也是使用这个端口。
-  port: 8080
+  port: 8070
 
 # 追踪与配置数据存储。SQLite 适合单机默认部署，Postgres 适合团队或多实例部署。
 storage:
-  # 存储后端，可选值：sqlite 或 postgres。
+  # 存储后端，可选值： sqlite 或 postgres 。
   driver: sqlite
   # SQLite 数据库文件路径。storage.driver=postgres 时忽略。
   path: ./data/ongoingai.db
   # Postgres 连接串。storage.driver=postgres 时必填。
-  # dsn: postgres://user:password@localhost:5432/ongoingai?sslmode=disable
+  # dsn: postgres://root:password@localhost:5432/ongoingai?sslmode=disable
 
 # 上游模型服务路由。匹配前缀的请求会剥离该前缀后转发到上游。
 providers:
   # 逻辑服务名，会出现在追踪记录、指标、认证审计事件和个人敏感信息规则范围中。
   llm:
     # 上游基础地址。请求转发前会先去掉 /llm 前缀。
-    upstream: https://api.openai.com
+    upstream: http://192.168.68.55:3000
     # 对外暴露的网关前缀。例如 /llm/v1/chat/completions 会转发为上游 /v1/chat/completions。
     prefix: /llm
 
 # 追踪记录中的请求/响应内容采集配置。
 tracing:
   # 是否把请求体和响应体写入追踪记录。除非需要回放或调试请求内容，建议保持 false。
-  capture_bodies: false
+  capture_bodies: true
   # 每个请求体和每个响应体最多采集的字节数。
-  body_max_size: 1048576
+  body_max_size: 0
 
 # 请求详情备份配置。默认关闭；开启后会由备份调度器按日导出 request/response 详情。
 backup:
   request_details:
     # 是否启用请求详情备份。关闭时不要求配置 bucket。
-    enabled: false
+    enabled: true
     # 生成每日备份窗口时使用的 IANA 时区，例如 UTC 或 Asia/Shanghai。
-    timezone: Local
+    timezone: Asia/Shanghai
     # 每日启动时间，24 小时制 HH:MM。
-    daily_at: "02:00"
+    daily_at: "12:58"
     # 本地临时分片目录；Docker 部署时建议挂载到宿主机。
     temp_dir: ./data/backup-tmp
     # 从追踪存储分页读取请求详情时的每页记录数。
@@ -56,15 +56,15 @@ backup:
     # S3 或兼容对象存储配置。凭证走 AWS SDK 默认凭证链或标准 AWS_* 环境变量。
     s3:
       # 备份对象存储桶名称。enabled=true 时必填。
-      bucket: ""
+      bucket: "llmgateway"
       # 备份对象名前缀；实际对象会写入 prefix/YYMMDD/。
       prefix: request-details
       # AWS 区域。使用默认凭证链可留空。
-      region: ""
+      region: "haic"
       # S3 兼容服务 endpoint，可留空使用 AWS 默认 endpoint。
-      endpoint: ""
+      endpoint: "http://192.168.68.99:9000"
       # MinIO 等兼容服务可能需要 path-style。
-      force_path_style: false
+      force_path_style: true
 
 # OpenTelemetry 与 Prometheus 可观测性配置。
 observability:
@@ -117,11 +117,11 @@ pii:
     # 是否检查或脱敏请求头，用于存储策略或上游转发策略。
     request_headers: true
     # 是否检查或脱敏请求体，用于存储策略或上游转发策略。
-    request_body: true
+    request_body: false
     # 是否检查或脱敏响应头，用于存储策略。
-    response_headers: true
+    response_headers: false
     # 是否检查或脱敏响应体，用于存储策略。
-    response_body: true
+    response_body: false
   # 启用的自由文本敏感信息检测器。
   detectors:
     # 检测邮箱地址。
