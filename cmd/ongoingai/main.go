@@ -41,6 +41,7 @@ const gatewayKeyCacheMaxStaleness = 60 * time.Second
 const traceWriterShutdownTimeout = 5 * time.Second
 const otelShutdownTimeout = 5 * time.Second
 const requestDetailsBackupSchedulerShutdownTimeout = 5 * time.Second
+const traceRetentionCleanupSchedulerShutdownTimeout = 5 * time.Second
 const serverReadHeaderTimeout = 10 * time.Second
 const serverReadTimeout = 30 * time.Second
 const serverIdleTimeout = 2 * time.Minute
@@ -83,6 +84,10 @@ type requestDetailsBackupScheduler interface {
 
 var newRequestDetailsBackupScheduler = func(cfg config.BackupRequestDetailsConfig, store trace.TraceStore, logger *slog.Logger) (requestDetailsBackupScheduler, error) {
 	return newRequestDetailsBackupSchedulerFromConfig(context.Background(), cfg, store, logger)
+}
+
+var newTraceRetentionCleanupScheduler = func(cfg config.TraceRetentionConfig, store trace.TraceStore, logger *slog.Logger) (traceRetentionCleanupScheduler, error) {
+	return newTraceRetentionCleanupSchedulerFromConfig(cfg, store, logger)
 }
 
 var signalNotifyContext = signal.NotifyContext
@@ -427,6 +432,14 @@ func runServe(args []string) int {
 			return 1
 		}
 	}
+	var traceRetentionScheduler traceRetentionCleanupScheduler
+	if cfg.Tracing.Retention.CleanupEnabled {
+		traceRetentionScheduler, err = newTraceRetentionCleanupScheduler(cfg.Tracing.Retention, traceStore, logger)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to initialize trace retention cleanup scheduler: %v\n", err)
+			return 1
+		}
+	}
 
 	gatewayKeyStore, err := newGatewayKeyStore(cfg)
 	if err != nil {
@@ -632,6 +645,8 @@ func runServe(args []string) int {
 		"prometheus_enabled", cfg.Observability.OTel.PrometheusEnabled,
 		"prometheus_path", cfg.Observability.OTel.PrometheusPath,
 		"request_details_backup_enabled", cfg.Backup.RequestDetails.Enabled,
+		"trace_retention_cleanup_enabled", cfg.Tracing.Retention.CleanupEnabled,
+		"trace_retention_days", cfg.Tracing.Retention.Days,
 	)
 
 	ctx, stop := signalNotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -639,6 +654,10 @@ func runServe(args []string) int {
 	if backupScheduler != nil {
 		backupScheduler.Start(ctx)
 		defer shutdownRequestDetailsBackupScheduler(logger, backupScheduler, requestDetailsBackupSchedulerShutdownTimeout)
+	}
+	if traceRetentionScheduler != nil {
+		traceRetentionScheduler.Start(ctx)
+		defer shutdownTraceRetentionCleanupScheduler(logger, traceRetentionScheduler, traceRetentionCleanupSchedulerShutdownTimeout)
 	}
 	if authorizerCache != nil {
 		go startGatewayAuthRefresher(ctx, authorizerCache, cfg, gatewayKeyStore, logger)
@@ -701,10 +720,31 @@ func gatewayCommandEnv(cfg config.Config, baseEnv []string) []string {
 func newGatewayServer(cfg config.Config, logger *slog.Logger, handler http.Handler) *http.Server {
 	return &http.Server{
 		Addr:              cfg.Server.Address(),
-		Handler:           proxy.LoggingMiddleware(logger, handler),
+		Handler:           proxy.LoggingMiddlewareWithOptions(logger, handler, proxy.LoggingOptions{WriteCorrelationHeader: shouldWriteCorrelationHeader(cfg)}),
 		ReadHeaderTimeout: serverReadHeaderTimeout,
 		ReadTimeout:       serverReadTimeout,
 		IdleTimeout:       serverIdleTimeout,
+	}
+}
+
+func shouldWriteCorrelationHeader(cfg config.Config) func(*http.Request) bool {
+	providerPrefixes := make([]string, 0, len(cfg.Providers))
+	for _, provider := range cfg.Providers {
+		prefix := pathutil.NormalizePrefix(provider.Prefix)
+		if prefix != "/" {
+			providerPrefixes = append(providerPrefixes, prefix)
+		}
+	}
+	return func(r *http.Request) bool {
+		if r == nil || r.URL == nil {
+			return true
+		}
+		for _, prefix := range providerPrefixes {
+			if pathutil.HasPathPrefix(r.URL.Path, prefix) {
+				return false
+			}
+		}
+		return true
 	}
 }
 
@@ -1137,6 +1177,19 @@ func shutdownRequestDetailsBackupScheduler(logger *slog.Logger, scheduler reques
 
 	if err := scheduler.Shutdown(ctx); err != nil && logger != nil {
 		logger.Error("failed to shutdown request details backup scheduler", "error", err, "timeout", timeout.String())
+	}
+}
+
+func shutdownTraceRetentionCleanupScheduler(logger *slog.Logger, scheduler traceRetentionCleanupScheduler, timeout time.Duration) {
+	if scheduler == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	if err := scheduler.Shutdown(ctx); err != nil && logger != nil {
+		logger.Error("failed to shutdown trace retention cleanup scheduler", "error", err, "timeout", timeout.String())
 	}
 }
 

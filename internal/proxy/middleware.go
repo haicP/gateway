@@ -18,18 +18,32 @@ import (
 	"github.com/ongoingai/gateway/internal/correlation"
 )
 
+type LoggingOptions struct {
+	WriteCorrelationHeader func(*http.Request) bool
+}
+
 func LoggingMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
+	return LoggingMiddlewareWithOptions(logger, next, LoggingOptions{})
+}
+
+func LoggingMiddlewareWithOptions(logger *slog.Logger, next http.Handler, options LoggingOptions) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if next == nil {
 		next = http.NotFoundHandler()
 	}
+	shouldWriteCorrelationHeader := options.WriteCorrelationHeader
+	if shouldWriteCorrelationHeader == nil {
+		shouldWriteCorrelationHeader = func(*http.Request) bool {
+			return true
+		}
+	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var correlationID string
 		r, correlationID = correlation.EnsureRequest(r)
-		if correlationID != "" {
+		if correlationID != "" && shouldWriteCorrelationHeader(r) {
 			w.Header().Set(correlation.HeaderName, correlationID)
 		}
 

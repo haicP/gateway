@@ -56,6 +56,18 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	if cfg.Backup.RequestDetails.DailyAt != "02:00" {
 		t.Fatalf("backup.request_details.daily_at=%q, want 02:00", cfg.Backup.RequestDetails.DailyAt)
 	}
+	if cfg.Tracing.Retention.Days != 14 {
+		t.Fatalf("tracing.retention.days=%d, want 14", cfg.Tracing.Retention.Days)
+	}
+	if cfg.Tracing.Retention.CleanupEnabled {
+		t.Fatalf("tracing.retention.cleanup_enabled=%v, want false", cfg.Tracing.Retention.CleanupEnabled)
+	}
+	if cfg.Tracing.Retention.CleanupDailyAt != "02:00" {
+		t.Fatalf("tracing.retention.cleanup_daily_at=%q, want 02:00", cfg.Tracing.Retention.CleanupDailyAt)
+	}
+	if cfg.Tracing.Retention.CleanupTimezone != "Local" {
+		t.Fatalf("tracing.retention.cleanup_timezone=%q, want Local", cfg.Tracing.Retention.CleanupTimezone)
+	}
 	if cfg.EffectivePIIMode() != PIIModeOff {
 		t.Fatalf("pii mode=%q, want %q", cfg.EffectivePIIMode(), PIIModeOff)
 	}
@@ -82,6 +94,11 @@ providers:
 tracing:
   capture_bodies: false
   body_max_size: 12345
+  retention:
+    days: 30
+    cleanup_enabled: false
+    cleanup_daily_at: "05:45"
+    cleanup_timezone: UTC
 observability:
   otel:
     enabled: false
@@ -154,6 +171,10 @@ backup:
 	t.Setenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_REGION", "cn-northwest-1")
 	t.Setenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_ENDPOINT", "https://s3.env.test")
 	t.Setenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_FORCE_PATH_STYLE", "true")
+	t.Setenv("ONGOINGAI_TRACE_RETENTION_DAYS", "21")
+	t.Setenv("ONGOINGAI_TRACE_CLEANUP_ENABLED", "true")
+	t.Setenv("ONGOINGAI_TRACE_CLEANUP_DAILY_AT", "06:30")
+	t.Setenv("ONGOINGAI_TRACE_CLEANUP_TIMEZONE", "Asia/Shanghai")
 
 	cfg, err := Load(configPath)
 	if err != nil {
@@ -245,6 +266,19 @@ backup:
 	if !backup.S3.ForcePathStyle {
 		t.Fatalf("backup.request_details.s3.force_path_style=%v, want true", backup.S3.ForcePathStyle)
 	}
+	retention := cfg.Tracing.Retention
+	if retention.Days != 21 {
+		t.Fatalf("tracing.retention.days=%d, want 21", retention.Days)
+	}
+	if !retention.CleanupEnabled {
+		t.Fatalf("tracing.retention.cleanup_enabled=%v, want true", retention.CleanupEnabled)
+	}
+	if retention.CleanupDailyAt != "06:30" {
+		t.Fatalf("tracing.retention.cleanup_daily_at=%q, want 06:30", retention.CleanupDailyAt)
+	}
+	if retention.CleanupTimezone != "Asia/Shanghai" {
+		t.Fatalf("tracing.retention.cleanup_timezone=%q, want Asia/Shanghai", retention.CleanupTimezone)
+	}
 }
 
 func TestLoadPreservesUnlimitedBodyMaxSizeValues(t *testing.T) {
@@ -268,6 +302,58 @@ func TestLoadPreservesUnlimitedBodyMaxSizeValues(t *testing.T) {
 			}
 			if cfg.Tracing.BodyMaxSize != value {
 				t.Fatalf("body_max_size=%d, want %d", cfg.Tracing.BodyMaxSize, value)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsInvalidTraceRetentionConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{
+			name: "rejects non-positive retention days",
+			mutate: func(cfg *Config) {
+				cfg.Tracing.Retention.Days = 0
+			},
+			wantErr: "tracing.retention.days must be > 0",
+		},
+		{
+			name: "rejects invalid cleanup time when enabled",
+			mutate: func(cfg *Config) {
+				cfg.Tracing.Retention.CleanupEnabled = true
+				cfg.Tracing.Retention.CleanupDailyAt = "2am"
+			},
+			wantErr: "cleanup_daily_at must use HH:MM",
+		},
+		{
+			name: "rejects invalid cleanup timezone when enabled",
+			mutate: func(cfg *Config) {
+				cfg.Tracing.Retention.CleanupEnabled = true
+				cfg.Tracing.Retention.CleanupTimezone = "Mars/Olympus"
+			},
+			wantErr: "cleanup_timezone must be a valid IANA timezone",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := Default()
+			tt.mutate(&cfg)
+
+			err := Validate(cfg)
+			if err == nil {
+				t.Fatal("Validate() error=nil, want trace retention validation error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error=%q, want %q", err.Error(), tt.wantErr)
 			}
 		})
 	}

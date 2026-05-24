@@ -29,6 +29,16 @@ tracing:
   capture_bodies: true
   # 每个请求体和每个响应体最多采集的字节数。
   body_max_size: 0
+  # trace 保留与自动清理配置。多实例部署时只在一个实例开启 cleanup_enabled。
+  retention:
+    # 保留最近多少天的 trace 记录。
+    days: 14
+    # 是否启用每日自动清理。默认关闭。
+    cleanup_enabled: false
+    # 每日清理启动时间，24 小时制 HH:MM。
+    cleanup_daily_at: "02:00"
+    # 计算每日清理时间使用的 IANA 时区，例如 Local、UTC 或 Asia/Shanghai。
+    cleanup_timezone: Local
 
 # 请求详情备份配置。默认关闭；开启后会由备份调度器按日导出 request/response 详情。
 backup:

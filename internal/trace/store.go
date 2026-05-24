@@ -25,6 +25,11 @@ type TraceStore interface {
 	GetErrorRateBreakdown(ctx context.Context, filter AnalyticsFilter, groupBy string) ([]ErrorRateStats, error)
 }
 
+// TraceRetentionDeleter deletes traces before a retention cutoff.
+type TraceRetentionDeleter interface {
+	DeleteTracesBefore(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
 // LLMResponseContentUpdater updates asynchronously derived semantic LLM output.
 type LLMResponseContentUpdater interface {
 	UpdateLLMResponseContent(ctx context.Context, traceID, content string) error

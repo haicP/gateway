@@ -83,8 +83,16 @@ func (providers *ProvidersConfig) UnmarshalYAML(value *yaml.Node) error {
 }
 
 type TracingConfig struct {
-	CaptureBodies bool `yaml:"capture_bodies"`
-	BodyMaxSize   int  `yaml:"body_max_size"`
+	CaptureBodies bool                 `yaml:"capture_bodies"`
+	BodyMaxSize   int                  `yaml:"body_max_size"`
+	Retention     TraceRetentionConfig `yaml:"retention"`
+}
+
+type TraceRetentionConfig struct {
+	Days            int    `yaml:"days"`
+	CleanupEnabled  bool   `yaml:"cleanup_enabled"`
+	CleanupDailyAt  string `yaml:"cleanup_daily_at"`
+	CleanupTimezone string `yaml:"cleanup_timezone"`
 }
 
 type ObservabilityConfig struct {
@@ -355,6 +363,12 @@ func Default() Config {
 		Tracing: TracingConfig{
 			CaptureBodies: false,
 			BodyMaxSize:   1 << 20,
+			Retention: TraceRetentionConfig{
+				Days:            14,
+				CleanupEnabled:  false,
+				CleanupDailyAt:  "02:00",
+				CleanupTimezone: "Local",
+			},
 		},
 		Observability: ObservabilityConfig{
 			OTel: OTelConfig{
@@ -496,6 +510,9 @@ func Validate(cfg Config) error {
 	if err != nil {
 		return err
 	}
+	if err := validateTraceRetentionConfig(cfg.Tracing.Retention); err != nil {
+		return err
+	}
 
 	if strings.TrimSpace(cfg.Auth.Header) == "" {
 		return errors.New("auth.header must not be empty")
@@ -516,6 +533,28 @@ func Validate(cfg Config) error {
 		return err
 	}
 
+	return nil
+}
+
+func validateTraceRetentionConfig(cfg TraceRetentionConfig) error {
+	if cfg.Days <= 0 {
+		return fmt.Errorf("tracing.retention.days must be > 0 (got %d)", cfg.Days)
+	}
+	if !cfg.CleanupEnabled {
+		return nil
+	}
+	if strings.TrimSpace(cfg.CleanupTimezone) == "" {
+		return errors.New("tracing.retention.cleanup_timezone is required when tracing.retention.cleanup_enabled=true")
+	}
+	if _, err := time.LoadLocation(strings.TrimSpace(cfg.CleanupTimezone)); err != nil {
+		return fmt.Errorf("tracing.retention.cleanup_timezone must be a valid IANA timezone (got %q): %w", cfg.CleanupTimezone, err)
+	}
+	if strings.TrimSpace(cfg.CleanupDailyAt) == "" {
+		return errors.New("tracing.retention.cleanup_daily_at is required when tracing.retention.cleanup_enabled=true")
+	}
+	if _, err := time.Parse("15:04", strings.TrimSpace(cfg.CleanupDailyAt)); err != nil {
+		return fmt.Errorf("tracing.retention.cleanup_daily_at must use HH:MM 24-hour format (got %q): %w", cfg.CleanupDailyAt, err)
+	}
 	return nil
 }
 
@@ -762,6 +801,26 @@ func applyEnv(cfg *Config) error {
 			return fmt.Errorf("invalid ONGOINGAI_BODY_MAX_SIZE: %w", err)
 		}
 		cfg.Tracing.BodyMaxSize = v
+	}
+	if retentionDays := os.Getenv("ONGOINGAI_TRACE_RETENTION_DAYS"); retentionDays != "" {
+		v, err := strconv.Atoi(retentionDays)
+		if err != nil {
+			return fmt.Errorf("invalid ONGOINGAI_TRACE_RETENTION_DAYS: %w", err)
+		}
+		cfg.Tracing.Retention.Days = v
+	}
+	if cleanupEnabled := os.Getenv("ONGOINGAI_TRACE_CLEANUP_ENABLED"); cleanupEnabled != "" {
+		v, err := strconv.ParseBool(cleanupEnabled)
+		if err != nil {
+			return fmt.Errorf("invalid ONGOINGAI_TRACE_CLEANUP_ENABLED: %w", err)
+		}
+		cfg.Tracing.Retention.CleanupEnabled = v
+	}
+	if cleanupDailyAt := os.Getenv("ONGOINGAI_TRACE_CLEANUP_DAILY_AT"); cleanupDailyAt != "" {
+		cfg.Tracing.Retention.CleanupDailyAt = cleanupDailyAt
+	}
+	if cleanupTimezone := os.Getenv("ONGOINGAI_TRACE_CLEANUP_TIMEZONE"); cleanupTimezone != "" {
+		cfg.Tracing.Retention.CleanupTimezone = cleanupTimezone
 	}
 	otelConfigured := false
 	otelSDKDisabledSet := false

@@ -15,6 +15,11 @@ providers:
 tracing:
   capture_bodies: false
   body_max_size: 1048576
+  retention:
+    days: 14
+    cleanup_enabled: false
+    cleanup_daily_at: "02:00"
+    cleanup_timezone: Local
 
 backup:
   request_details:

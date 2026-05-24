@@ -34,6 +34,10 @@ If you set a variable to an empty string, gateway ignores it.
 | `ONGOINGAI_LLM_UPSTREAM` | string | `providers.llm.upstream` | `ONGOINGAI_LLM_UPSTREAM=https://api.openai.com` |
 | `ONGOINGAI_CAPTURE_BODIES` | bool (`ParseBool`) | `tracing.capture_bodies` | `ONGOINGAI_CAPTURE_BODIES=true` |
 | `ONGOINGAI_BODY_MAX_SIZE` | int (`Atoi`) | `tracing.body_max_size` | `ONGOINGAI_BODY_MAX_SIZE=262144` |
+| `ONGOINGAI_TRACE_RETENTION_DAYS` | int (`Atoi`) | `tracing.retention.days` | `ONGOINGAI_TRACE_RETENTION_DAYS=14` |
+| `ONGOINGAI_TRACE_CLEANUP_ENABLED` | bool (`ParseBool`) | `tracing.retention.cleanup_enabled` | `ONGOINGAI_TRACE_CLEANUP_ENABLED=true` |
+| `ONGOINGAI_TRACE_CLEANUP_DAILY_AT` | string (`HH:MM`) | `tracing.retention.cleanup_daily_at` | `ONGOINGAI_TRACE_CLEANUP_DAILY_AT=02:00` |
+| `ONGOINGAI_TRACE_CLEANUP_TIMEZONE` | string | `tracing.retention.cleanup_timezone` | `ONGOINGAI_TRACE_CLEANUP_TIMEZONE=Asia/Shanghai` |
 | `OTEL_SDK_DISABLED` | bool (`ParseBool`) | `observability.otel.enabled` (inverse) | `OTEL_SDK_DISABLED=false` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | string | `observability.otel.endpoint` | `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` |
 | `OTEL_EXPORTER_OTLP_INSECURE` | bool (`ParseBool`) | `observability.otel.insecure` | `OTEL_EXPORTER_OTLP_INSECURE=true` |
@@ -88,8 +92,9 @@ The following config areas do not support env var overrides in this release:
 
 ## Type and validation behavior
 
-- `ONGOINGAI_PORT` and `ONGOINGAI_BODY_MAX_SIZE` must parse as integers.
-- `ONGOINGAI_CAPTURE_BODIES`, `ONGOINGAI_AUTH_ENABLED`, and backup bool fields must parse as booleans.
+- `ONGOINGAI_PORT`, `ONGOINGAI_BODY_MAX_SIZE`, and `ONGOINGAI_TRACE_RETENTION_DAYS` must parse as integers.
+- `ONGOINGAI_CAPTURE_BODIES`, `ONGOINGAI_AUTH_ENABLED`, trace cleanup bool fields, and backup bool fields must parse as booleans.
+- Trace cleanup `DAILY_AT` must use `HH:MM`, and trace cleanup timezone must be a valid IANA timezone when cleanup is enabled.
 - OpenTelemetry bool fields (`OTEL_SDK_DISABLED`, `OTEL_EXPORTER_OTLP_INSECURE`) must parse as booleans.
 - Backup integer fields (`PAGE_SIZE`, `SHARD_MAX_BYTES`, and retry intervals) must parse as integers.
 - OpenTelemetry integer fields (`OTEL_EXPORTER_OTLP_TIMEOUT`, `OTEL_METRIC_EXPORT_INTERVAL`) must parse as integers.

@@ -42,6 +42,11 @@ providers:
 tracing:
   capture_bodies: false
   body_max_size: 1048576
+  retention:
+    days: 14
+    cleanup_enabled: false
+    cleanup_daily_at: "02:00"
+    cleanup_timezone: Local
 
 backup:
   request_details:
@@ -174,6 +179,10 @@ Each entry under `providers` uses the same schema. The default route is
 | --- | --- | --- | --- | --- |
 | `tracing.capture_bodies` | bool | `false` | No | If `true`, gateway stores captured request and response bodies after PII processing. |
 | `tracing.body_max_size` | int | `1048576` | No | Max captured bytes per request and response body. Set to `0` or a negative value to capture without an application-level truncation limit. |
+| `tracing.retention.days` | int | `14` | No | Number of days of traces to keep. Must be `> 0`. |
+| `tracing.retention.cleanup_enabled` | bool | `false` | No | Enables the daily trace cleanup worker. Keep this `false` on all but one instance in multi-instance deployments. |
+| `tracing.retention.cleanup_daily_at` | string | `02:00` | Conditional | Daily cleanup run time in `HH:MM` 24-hour format. Required when cleanup is enabled. |
+| `tracing.retention.cleanup_timezone` | string | `Local` | Conditional | IANA timezone used to compute the daily cleanup run time. Required when cleanup is enabled. |
 
 ### `backup.request_details`
 

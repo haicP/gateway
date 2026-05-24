@@ -277,6 +277,86 @@ func TestRunServeStartsRequestDetailsBackupWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestRunServeDoesNotStartTraceRetentionCleanupWhenDisabled(t *testing.T) {
+	configPath, port := writeServeConfigWithTraceRetentionCleanup(t, false)
+
+	originalSignalNotifyContext := signalNotifyContext
+	originalNewTraceRetentionScheduler := newTraceRetentionCleanupScheduler
+	t.Cleanup(func() {
+		signalNotifyContext = originalSignalNotifyContext
+		newTraceRetentionCleanupScheduler = originalNewTraceRetentionScheduler
+	})
+
+	shutdownCtx, shutdown := context.WithCancel(context.Background())
+	t.Cleanup(shutdown)
+	signalNotifyContext = func(_ context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
+		return shutdownCtx, func() {}
+	}
+
+	called := false
+	newTraceRetentionCleanupScheduler = func(config.TraceRetentionConfig, trace.TraceStore, *slog.Logger) (traceRetentionCleanupScheduler, error) {
+		called = true
+		return &testTraceRetentionCleanupScheduler{}, nil
+	}
+
+	exitCodeCh := make(chan int, 1)
+	go func() {
+		exitCodeCh <- runServe([]string{"--config", configPath})
+	}()
+
+	waitForHTTPReady(t, fmt.Sprintf("http://127.0.0.1:%d/api/health", port))
+	shutdown()
+	assertRunServeExitCode(t, exitCodeCh)
+	if called {
+		t.Fatal("trace retention cleanup scheduler factory was called when cleanup was disabled")
+	}
+}
+
+func TestRunServeStartsTraceRetentionCleanupWhenEnabled(t *testing.T) {
+	configPath, port := writeServeConfigWithTraceRetentionCleanup(t, true)
+
+	originalSignalNotifyContext := signalNotifyContext
+	originalNewTraceRetentionScheduler := newTraceRetentionCleanupScheduler
+	t.Cleanup(func() {
+		signalNotifyContext = originalSignalNotifyContext
+		newTraceRetentionCleanupScheduler = originalNewTraceRetentionScheduler
+	})
+
+	shutdownCtx, shutdown := context.WithCancel(context.Background())
+	t.Cleanup(shutdown)
+	signalNotifyContext = func(_ context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
+		return shutdownCtx, func() {}
+	}
+
+	scheduler := &testTraceRetentionCleanupScheduler{}
+	var gotConfig config.TraceRetentionConfig
+	newTraceRetentionCleanupScheduler = func(cfg config.TraceRetentionConfig, _ trace.TraceStore, _ *slog.Logger) (traceRetentionCleanupScheduler, error) {
+		gotConfig = cfg
+		return scheduler, nil
+	}
+
+	exitCodeCh := make(chan int, 1)
+	go func() {
+		exitCodeCh <- runServe([]string{"--config", configPath})
+	}()
+
+	waitForHTTPReady(t, fmt.Sprintf("http://127.0.0.1:%d/api/health", port))
+	shutdown()
+	assertRunServeExitCode(t, exitCodeCh)
+	if gotConfig.Days != 7 {
+		t.Fatalf("trace retention days=%d, want 7", gotConfig.Days)
+	}
+	if gotConfig.CleanupDailyAt != "03:30" {
+		t.Fatalf("trace cleanup daily_at=%q, want 03:30", gotConfig.CleanupDailyAt)
+	}
+	if !scheduler.Started() {
+		t.Fatal("trace retention cleanup scheduler was not started")
+	}
+	if !scheduler.ShutdownCalled() {
+		t.Fatal("trace retention cleanup scheduler was not shutdown")
+	}
+}
+
 type testRequestDetailsBackupScheduler struct {
 	mu             sync.Mutex
 	started        bool
@@ -303,6 +383,37 @@ func (s *testRequestDetailsBackupScheduler) Started() bool {
 }
 
 func (s *testRequestDetailsBackupScheduler) ShutdownCalled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.shutdownCalled
+}
+
+type testTraceRetentionCleanupScheduler struct {
+	mu             sync.Mutex
+	started        bool
+	shutdownCalled bool
+}
+
+func (s *testTraceRetentionCleanupScheduler) Start(context.Context) {
+	s.mu.Lock()
+	s.started = true
+	s.mu.Unlock()
+}
+
+func (s *testTraceRetentionCleanupScheduler) Shutdown(context.Context) error {
+	s.mu.Lock()
+	s.shutdownCalled = true
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *testTraceRetentionCleanupScheduler) Started() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.started
+}
+
+func (s *testTraceRetentionCleanupScheduler) ShutdownCalled() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.shutdownCalled
@@ -349,6 +460,43 @@ auth:
   enabled: false
   header: X-OngoingAI-Gateway-Key
 %s`, port, filepath.Join(tmpDir, "traces.db"), backupBlock)
+	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return configPath, port
+}
+
+func writeServeConfigWithTraceRetentionCleanup(t *testing.T, enabled bool) (string, int) {
+	t.Helper()
+
+	port := freeTCPPort(t)
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "ongoingai.yaml")
+	cleanupEnabled := "false"
+	if enabled {
+		cleanupEnabled = "true"
+	}
+	configBody := fmt.Sprintf(`server:
+  host: 127.0.0.1
+  port: %d
+storage:
+  driver: sqlite
+  path: %q
+providers:
+  llm:
+    upstream: http://127.0.0.1:1
+    prefix: /llm
+tracing:
+  capture_bodies: false
+  retention:
+    days: 7
+    cleanup_enabled: %s
+    cleanup_daily_at: "03:30"
+    cleanup_timezone: UTC
+auth:
+  enabled: false
+  header: X-OngoingAI-Gateway-Key
+`, port, filepath.Join(tmpDir, "traces.db"), cleanupEnabled)
 	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}

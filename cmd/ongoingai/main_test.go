@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -105,6 +106,38 @@ func TestNewGatewayServerUsesSafeTimeouts(t *testing.T) {
 	}
 	if server.IdleTimeout != serverIdleTimeout {
 		t.Fatalf("IdleTimeout=%s, want %s", server.IdleTimeout, serverIdleTimeout)
+	}
+}
+
+func TestNewGatewayServerSuppressesCorrelationHeaderForProviderRoutes(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Default()
+	cfg.Providers = config.ProvidersConfig{
+		"openai": {Upstream: "https://api.openai.com", Prefix: "/openai"},
+	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Upstream-Test", "preserved")
+		_, _ = w.Write([]byte("upstream-body"))
+	})
+	server := newGatewayServer(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), handler)
+
+	proxyRec := httptest.NewRecorder()
+	server.Handler.ServeHTTP(proxyRec, httptest.NewRequest(http.MethodGet, "/openai/v1/models", nil))
+	if got := proxyRec.Header().Get(correlation.HeaderName); got != "" {
+		t.Fatalf("proxy response correlation header=%q, want empty", got)
+	}
+	if got := proxyRec.Header().Get("X-Upstream-Test"); got != "preserved" {
+		t.Fatalf("upstream header=%q, want preserved", got)
+	}
+	if got := proxyRec.Body.String(); got != "upstream-body" {
+		t.Fatalf("response body=%q, want upstream-body", got)
+	}
+
+	apiRec := httptest.NewRecorder()
+	server.Handler.ServeHTTP(apiRec, httptest.NewRequest(http.MethodGet, "/api/health", nil))
+	if got := apiRec.Header().Get(correlation.HeaderName); got == "" {
+		t.Fatal("api response correlation header is empty, want gateway header")
 	}
 }
 

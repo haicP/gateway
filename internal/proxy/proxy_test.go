@@ -77,6 +77,7 @@ func TestHandlerProxiesAndStripsPrefix(t *testing.T) {
 		gotMethod = r.Method
 		gotBody = string(body)
 		gotHost = r.Host
+		w.Header().Set("X-Upstream-Test", "preserved")
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
@@ -120,6 +121,12 @@ func TestHandlerProxiesAndStripsPrefix(t *testing.T) {
 	}
 	if gotHost != strings.TrimPrefix(upstream.URL, "http://") {
 		t.Fatalf("upstream host %q, want %q", gotHost, strings.TrimPrefix(upstream.URL, "http://"))
+	}
+	if rec.Header().Get("X-Upstream-Test") != "preserved" {
+		t.Fatalf("upstream response header=%q, want preserved", rec.Header().Get("X-Upstream-Test"))
+	}
+	if rec.Body.String() != `{"ok":true}` {
+		t.Fatalf("response body=%q, want upstream body", rec.Body.String())
 	}
 }
 

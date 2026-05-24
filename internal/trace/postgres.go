@@ -574,6 +574,21 @@ func (s *PostgresStore) GetTrace(ctx context.Context, id string) (*Trace, error)
 	return traceRow, nil
 }
 
+func (s *PostgresStore) DeleteTracesBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, nil
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM traces WHERE timestamp < $1`, cutoff.UTC())
+	if err != nil {
+		return 0, fmt.Errorf("delete traces before %s: %w", cutoff.UTC().Format(time.RFC3339), err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("read deleted trace count: %w", err)
+	}
+	return affected, nil
+}
+
 func (s *PostgresStore) UpdateLLMResponseContent(ctx context.Context, traceID, content string) error {
 	traceID = strings.TrimSpace(traceID)
 	if traceID == "" {

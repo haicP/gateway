@@ -395,6 +395,78 @@ func TestPostgresStoreWritesCompressedSpoolBodiesAndQueriesSummaries(t *testing.
 	}
 }
 
+func TestPostgresStoreDeleteTracesBeforeCascadesBodies(t *testing.T) {
+	store := newPostgresTestStore(t)
+
+	idPrefix := fmt.Sprintf("trace-pg-retention-%d-", time.Now().UnixNano())
+	cleanupPostgresTestTraces(t, store, idPrefix)
+
+	base := time.Date(2026, 2, 12, 12, 0, 0, 0, time.UTC)
+	requestPath := filepath.Join(t.TempDir(), "request.txt")
+	responsePath := filepath.Join(t.TempDir(), "response.txt")
+	if err := os.WriteFile(requestPath, []byte("request body"), 0o600); err != nil {
+		t.Fatalf("write request fixture: %v", err)
+	}
+	if err := os.WriteFile(responsePath, []byte("response body"), 0o600); err != nil {
+		t.Fatalf("write response fixture: %v", err)
+	}
+
+	oldID := idPrefix + "old"
+	retainedID := idPrefix + "retained"
+	rows := []*Trace{
+		{
+			ID:               oldID,
+			Timestamp:        base.Add(-time.Hour),
+			OrgID:            "org-retention",
+			WorkspaceID:      "workspace-retention",
+			Provider:         "openai",
+			Model:            "gpt-4o",
+			RequestMethod:    "POST",
+			RequestPath:      "/openai/v1/chat/completions",
+			RequestBodyPath:  requestPath,
+			ResponseStatus:   200,
+			ResponseBodyPath: responsePath,
+		},
+		{
+			ID:             retainedID,
+			Timestamp:      base,
+			OrgID:          "org-retention",
+			WorkspaceID:    "workspace-retention",
+			Provider:       "openai",
+			Model:          "gpt-4o",
+			RequestMethod:  "POST",
+			RequestPath:    "/openai/v1/chat/completions",
+			ResponseStatus: 200,
+		},
+	}
+	for _, row := range rows {
+		if err := store.WriteTrace(context.Background(), row); err != nil {
+			t.Fatalf("WriteTrace(%s) error: %v", row.ID, err)
+		}
+	}
+
+	deleted, err := store.DeleteTracesBefore(context.Background(), base)
+	if err != nil {
+		t.Fatalf("DeleteTracesBefore() error: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted=%d, want 1", deleted)
+	}
+	if _, err := store.GetTrace(context.Background(), oldID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("old trace error=%v, want ErrNotFound", err)
+	}
+	if _, err := store.GetTrace(context.Background(), retainedID); err != nil {
+		t.Fatalf("GetTrace(retained) error=%v, want retained", err)
+	}
+	var bodyRows int
+	if err := store.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM trace_bodies WHERE trace_id = $1`, oldID).Scan(&bodyRows); err != nil {
+		t.Fatalf("query trace_bodies count: %v", err)
+	}
+	if bodyRows != 0 {
+		t.Fatalf("trace_bodies rows for deleted trace=%d, want 0", bodyRows)
+	}
+}
+
 func TestPostgresStoreExportTracesOrdersPagesAndDecompressesBodies(t *testing.T) {
 	store := newPostgresTestStore(t)
 

@@ -534,6 +534,44 @@ func TestSQLiteStoreGetTraceAndQueryTraces(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreDeleteTracesBefore(t *testing.T) {
+	t.Parallel()
+
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "retention.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error: %v", err)
+	}
+	defer store.Close()
+
+	base := time.Date(2026, 2, 12, 12, 0, 0, 0, time.UTC)
+	rows := []*Trace{
+		{ID: "old", Timestamp: base.Add(-time.Hour), Provider: "openai", Model: "gpt-4o", RequestMethod: "POST", RequestPath: "/llm/v1/chat", ResponseStatus: 200},
+		{ID: "cutoff", Timestamp: base, Provider: "openai", Model: "gpt-4o", RequestMethod: "POST", RequestPath: "/llm/v1/chat", ResponseStatus: 200},
+		{ID: "new", Timestamp: base.Add(time.Hour), Provider: "openai", Model: "gpt-4o", RequestMethod: "POST", RequestPath: "/llm/v1/chat", ResponseStatus: 200},
+	}
+	for _, row := range rows {
+		if err := store.WriteTrace(context.Background(), row); err != nil {
+			t.Fatalf("WriteTrace(%s) error: %v", row.ID, err)
+		}
+	}
+
+	deleted, err := store.DeleteTracesBefore(context.Background(), base)
+	if err != nil {
+		t.Fatalf("DeleteTracesBefore() error: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted=%d, want 1", deleted)
+	}
+	if _, err := store.GetTrace(context.Background(), "old"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("old trace error=%v, want ErrNotFound", err)
+	}
+	for _, id := range []string{"cutoff", "new"} {
+		if _, err := store.GetTrace(context.Background(), id); err != nil {
+			t.Fatalf("GetTrace(%s) error=%v, want retained", id, err)
+		}
+	}
+}
+
 func TestSQLiteStoreExportTracesOrdersPagesAndIncludesInlineBodies(t *testing.T) {
 	t.Parallel()
 
