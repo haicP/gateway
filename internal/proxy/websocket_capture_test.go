@@ -165,6 +165,53 @@ func TestWebSocketProxyPassThroughAndCapturesResponsesTurns(t *testing.T) {
 	}
 }
 
+func TestWebSocketProxyStripsCompressionExtensionsFromUpstreamHandshake(t *testing.T) {
+	t.Parallel()
+
+	var upstreamMu sync.Mutex
+	var gotExtensions string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamMu.Lock()
+		gotExtensions = r.Header.Get("Sec-WebSocket-Extensions")
+		upstreamMu.Unlock()
+
+		conn, brw, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack upstream: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		accept := websocketAccept(r.Header.Get("Sec-WebSocket-Key"))
+		fmt.Fprintf(brw, "HTTP/1.1 101 Switching Protocols\r\n")
+		fmt.Fprintf(brw, "Upgrade: websocket\r\n")
+		fmt.Fprintf(brw, "Connection: Upgrade\r\n")
+		fmt.Fprintf(brw, "Sec-WebSocket-Accept: %s\r\n\r\n", accept)
+		if err := brw.Flush(); err != nil {
+			t.Errorf("flush handshake: %v", err)
+		}
+	}))
+	defer upstream.Close()
+
+	proxyHandler, err := NewHandler([]Route{{Prefix: "/llm", Upstream: upstream.URL}}, slog.New(slog.NewTextHandler(io.Discard, nil)), http.NotFoundHandler())
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	gateway := httptest.NewServer(proxyHandler)
+	defer gateway.Close()
+
+	conn, _ := openWebSocket(t, gateway.Listener.Addr().String(), "/llm/v1/responses", http.Header{
+		"Sec-WebSocket-Extensions": []string{"permessage-deflate; client_max_window_bits"},
+	})
+	defer conn.Close()
+
+	upstreamMu.Lock()
+	defer upstreamMu.Unlock()
+	if gotExtensions != "" {
+		t.Fatalf("upstream Sec-WebSocket-Extensions=%q, want empty", gotExtensions)
+	}
+}
+
 func TestWebSocketTurnSplitterHandlesCodexTurnsAndSkipsControlMessages(t *testing.T) {
 	t.Parallel()
 
@@ -212,6 +259,65 @@ func TestWebSocketTurnSplitterHandlesCodexTurnsAndSkipsControlMessages(t *testin
 	}
 	if !strings.Contains(string(exchange.RequestBody), "turn/steer") {
 		t.Fatalf("turn/steer not captured in active turn: %s", string(exchange.RequestBody))
+	}
+}
+
+func TestWebSocketTurnSplitterCapturesRealtimeConversationItemAndResponseDone(t *testing.T) {
+	t.Parallel()
+
+	var captured []*CapturedExchange
+	recorder := &webSocketTurnRecorder{
+		config: webSocketCaptureConfig{
+			maxBodySize: 4096,
+			base: CapturedExchange{
+				Method:         http.MethodGet,
+				Path:           "/llm/v1/responses",
+				RequestHeaders: http.Header{},
+				Transport:      "websocket",
+			},
+			sink: func(exchange *CapturedExchange) {
+				copied := *exchange
+				captured = append(captured, &copied)
+			},
+		},
+		connectionID: "ws-test",
+	}
+
+	recorder.ObserveClientBytes(makeWebSocketFrame(true, websocketOpcodeText, []byte(`{"type":"session.update","session":{"modalities":["text"]}}`)))
+	recorder.ObserveClientBytes(makeWebSocketFrame(true, websocketOpcodeText, []byte(`{"type":"conversation.item.create","item":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}}`)))
+	recorder.ObserveClientBytes(makeWebSocketFrame(true, websocketOpcodeText, []byte(`{"type":"response.create","response":{"modalities":["text"]}}`)))
+	recorder.ObserveServerBytes(makeWebSocketFrame(false, websocketOpcodeText, []byte(`{"type":"response.output_text.delta","delta":"ok"}`)))
+	recorder.ObserveServerBytes(makeWebSocketFrame(false, websocketOpcodeText, []byte(`{"type":"response.done","response":{"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}`)))
+	recorder.Close()
+
+	if len(captured) != 1 {
+		t.Fatalf("captured len=%d, want 1", len(captured))
+	}
+	exchange := captured[0]
+	if exchange.Transport != "websocket" {
+		t.Fatalf("transport=%q, want websocket", exchange.Transport)
+	}
+	if exchange.WebSocketTurnStartType != "conversation.item.create" {
+		t.Fatalf("turn start type=%q, want conversation.item.create", exchange.WebSocketTurnStartType)
+	}
+	if exchange.WebSocketTurnTerminalType != "response.done" {
+		t.Fatalf("turn terminal type=%q, want response.done", exchange.WebSocketTurnTerminalType)
+	}
+	if exchange.WebSocketRequestMessages != 2 {
+		t.Fatalf("request messages=%d, want 2", exchange.WebSocketRequestMessages)
+	}
+	if exchange.WebSocketResponseMessages != 2 {
+		t.Fatalf("response messages=%d, want 2", exchange.WebSocketResponseMessages)
+	}
+	requestBody := string(exchange.RequestBody)
+	if !strings.Contains(requestBody, "conversation.item.create") || !strings.Contains(requestBody, "response.create") {
+		t.Fatalf("request body=%s, want conversation item and response create", requestBody)
+	}
+	if strings.Contains(requestBody, "session.update") {
+		t.Fatalf("control message leaked into request body: %s", requestBody)
+	}
+	if !strings.Contains(string(exchange.ResponseBody), "response.done") {
+		t.Fatalf("response body=%s, want response.done", string(exchange.ResponseBody))
 	}
 }
 

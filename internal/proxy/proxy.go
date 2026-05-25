@@ -101,6 +101,9 @@ func buildProxyHandler(route Route, logger *slog.Logger, transport http.RoundTri
 		req.URL.Path = pathutil.StripPathPrefix(req.URL.Path, prefix)
 		baseDirector(req)
 		req.Host = target.Host
+		if IsWebSocketUpgrade(req) {
+			req.Header.Del("Sec-WebSocket-Extensions")
+		}
 	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, req *http.Request, proxyErr error) {
 		logger.ErrorContext(req.Context(), "proxy request failed", "provider_prefix", prefix, "path", req.URL.Path, "error", proxyErr)

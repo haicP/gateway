@@ -128,6 +128,58 @@ func TestBuildTraceRecordCapturesWebSocketTurnMetadataAndParsesEnvelope(t *testi
 	}
 }
 
+func TestBuildTraceRecordCapturesRealtimeWebSocketDoneMetadata(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Default()
+	cfg.Tracing.CaptureBodies = true
+
+	exchange := &proxy.CapturedExchange{
+		Method:                    http.MethodGet,
+		Path:                      "/llm/v1/responses",
+		StatusCode:                http.StatusSwitchingProtocols,
+		RequestHeaders:            http.Header{"Authorization": {"Bearer sk-provider-secret"}},
+		RequestBody:               []byte(`[{"direction":"client_to_upstream","opcode":"text","payload":{"type":"conversation.item.create","item":{"role":"user"}},"bytes":88},{"direction":"client_to_upstream","opcode":"text","payload":{"type":"response.create","response":{"modalities":["text"]}},"bytes":67}]`),
+		ResponseBody:              []byte(`[{"direction":"upstream_to_client","opcode":"text","payload":{"type":"response.done","response":{"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}},"bytes":94}]`),
+		RequestBodyBytes:          155,
+		ResponseBodyBytes:         94,
+		Streaming:                 true,
+		StreamChunks:              3,
+		Transport:                 "websocket",
+		WebSocketConnectionID:     "ws-test",
+		WebSocketTurnIndex:        1,
+		WebSocketTurnStartType:    "conversation.item.create",
+		WebSocketTurnTerminalType: "response.done",
+		WebSocketRequestMessages:  2,
+		WebSocketResponseMessages: 1,
+	}
+
+	record := buildTraceRecord(cfg, providers.DefaultRegistry(), exchange)
+	if record.InputTokens != 3 || record.OutputTokens != 2 || record.TotalTokens != 5 {
+		t.Fatalf("usage=%d/%d/%d, want 3/2/5", record.InputTokens, record.OutputTokens, record.TotalTokens)
+	}
+	if !strings.Contains(record.RequestBody, "conversation.item.create") || !strings.Contains(record.RequestBody, "response.create") {
+		t.Fatalf("request body=%q, want realtime request events", record.RequestBody)
+	}
+	if !strings.Contains(record.ResponseBody, "response.done") {
+		t.Fatalf("response body=%q, want response.done", record.ResponseBody)
+	}
+
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(record.Metadata), &metadata); err != nil {
+		t.Fatalf("unmarshal metadata: %v", err)
+	}
+	if metadata["transport"] != "websocket" {
+		t.Fatalf("transport metadata=%v, want websocket", metadata["transport"])
+	}
+	if metadata["websocket_turn_terminal_type"] != "response.done" {
+		t.Fatalf("websocket_turn_terminal_type=%v, want response.done", metadata["websocket_turn_terminal_type"])
+	}
+	if metadata["websocket_request_messages"] != float64(2) {
+		t.Fatalf("websocket_request_messages=%v, want 2", metadata["websocket_request_messages"])
+	}
+}
+
 func TestBuildTraceRecordUsesRequestStartTimeForTimestamp(t *testing.T) {
 	t.Parallel()
 

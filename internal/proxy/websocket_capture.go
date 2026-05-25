@@ -302,7 +302,19 @@ func (r *webSocketTurnRecorder) observeTextLocked(direction string, payload []by
 	startType, terminalType := classifyWebSocketText(payload)
 	if direction == "client_to_upstream" {
 		switch startType {
-		case "response.create", "turn/start":
+		case "conversation.item.create":
+			if r.current == nil {
+				r.startTurnLocked(startType)
+			}
+		case "response.create":
+			if r.current == nil {
+				r.startTurnLocked(startType)
+			} else if r.current.startType != "conversation.item.create" {
+				r.current.incomplete = true
+				r.emitCurrentLocked("next_turn_start")
+				r.startTurnLocked(startType)
+			}
+		case "turn/start":
 			if r.current != nil {
 				r.current.incomplete = true
 				r.emitCurrentLocked("next_turn_start")
@@ -480,9 +492,9 @@ func classifyWebSocketText(payload []byte) (startType string, terminalType strin
 	}
 	if rawType, ok := message["type"].(string); ok {
 		switch strings.TrimSpace(rawType) {
-		case "response.create":
-			return "response.create", ""
-		case "response.completed", "response.failed", "error":
+		case "conversation.item.create", "response.create":
+			return strings.TrimSpace(rawType), ""
+		case "response.done", "response.completed", "response.failed", "error":
 			return "", strings.TrimSpace(rawType)
 		}
 	}
