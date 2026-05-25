@@ -49,6 +49,10 @@ type traceWriteFailureHandlerSetter interface {
 	SetWriteFailureHandler(handler trace.WriteFailureHandler)
 }
 
+type traceWriterMetricsSetter interface {
+	SetMetrics(m *trace.WriterMetrics)
+}
+
 var newTraceWriter = func(store trace.TraceStore, bufferSize int) asyncTraceWriter {
 	return trace.NewWriter(store, bufferSize)
 }
@@ -261,6 +265,12 @@ func runServe(args []string) int {
 		return 1
 	}
 	attachTraceWriterFailureLogging(logger, traceWriter, nil)
+	llmResponseEnricher := newLLMResponseContentEnricher(traceStore, logger, llmResponseContentEnrichBufferSize, llmResponseContentEnrichTimeout)
+	if llmResponseEnricher != nil {
+		llmResponseEnricher.Start(context.Background())
+		attachLLMResponseContentEnricher(traceWriter, llmResponseEnricher)
+	}
+	defer shutdownLLMResponseContentEnricher(logger, llmResponseEnricher, llmResponseContentShutdownTimeout)
 	defer shutdownTraceWriter(logger, traceWriter, traceWriterShutdownTimeout)
 	var backupScheduler requestDetailsBackupScheduler
 	if cfg.Backup.RequestDetails.Enabled {
@@ -756,6 +766,19 @@ func attachTraceWriterFailureLogging(logger *slog.Logger, writer asyncTraceWrite
 			"error_class", failure.ErrorClass,
 			"error_kind", fmt.Sprintf("%T", failure.Err),
 		)
+	})
+}
+
+func attachLLMResponseContentEnricher(writer asyncTraceWriter, enricher *llmResponseContentEnricher) {
+	if writer == nil || enricher == nil {
+		return
+	}
+	metricsSetter, ok := writer.(traceWriterMetricsSetter)
+	if !ok {
+		return
+	}
+	metricsSetter.SetMetrics(&trace.WriterMetrics{
+		OnWriteSuccessIDs: enricher.EnqueueTraceIDs,
 	})
 }
 

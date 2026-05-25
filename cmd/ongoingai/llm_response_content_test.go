@@ -118,6 +118,73 @@ func TestExtractLLMResponseContentNonStreamingResponsesAndAnthropic(t *testing.T
 	}
 }
 
+func TestExtractLLMResponseContentWebSocketCapturedMessages(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`[
+		{"direction":"client_to_upstream","opcode":"text","payload":{"type":"response.output_text.delta","item_id":"msg_1","content_index":0,"delta":"ignore"}},
+		{"direction":"upstream_to_client","opcode":"binary","payload_base64":"AAAA"},
+		{"direction":"upstream_to_client","opcode":"text","payload":{"type":"response.output_text.delta","item_id":"msg_1","content_index":0,"delta":"Hi "}},
+		{"direction":"upstream_to_client","opcode":"text","payload":"{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"content_index\":0,\"delta\":\"there\"}"},
+		{"direction":"upstream_to_client","opcode":"text","payload":{"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\"city\""}},
+		{"direction":"upstream_to_client","opcode":"text","payload":{"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":":\"Paris\"}"}},
+		{"direction":"upstream_to_client","opcode":"text","payload":"{oops}"}
+	]`)
+
+	doc := mustExtractLLMResponseContent(t, body, false)
+	if got := findLLMPart(t, doc, "text")["text"]; got != "Hi there" {
+		t.Fatalf("text=%v, want Hi there", got)
+	}
+	if got := findLLMPart(t, doc, "tool_call")["arguments"]; got != `{"city":"Paris"}` {
+		t.Fatalf("arguments=%v, want city JSON", got)
+	}
+}
+
+func TestExtractLLMResponseContentWebSocketDoneAndCompletedFinalResponse(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		eventType string
+		want      string
+	}{
+		{name: "done", eventType: "response.done", want: "done text"},
+		{name: "completed", eventType: "response.completed", want: "completed text"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			body := []byte(`[
+				{"direction":"upstream_to_client","opcode":"text","payload":{
+					"type":"` + tt.eventType + `",
+					"response":{"output":[{"type":"message","content":[{"type":"output_text","text":"` + tt.want + `"}]}]}
+				}}
+			]`)
+
+			doc := mustExtractLLMResponseContent(t, body, false)
+			if got := findLLMPart(t, doc, "text")["text"]; got != tt.want {
+				t.Fatalf("text=%v, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractLLMResponseContentIgnoresNonSemanticWebSocketEnvelope(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`[
+		{"direction":"client_to_upstream","opcode":"text","payload":{"type":"response.output_text.delta","delta":"request"}},
+		{"direction":"upstream_to_client","opcode":"binary","payload_base64":"AAAA"},
+		{"direction":"upstream_to_client","opcode":"text","payload":"{oops}"}
+	]`)
+
+	if raw, ok := extractLLMResponseContentJSON(body, false); ok {
+		t.Fatalf("content=%s, want no extracted content", raw)
+	}
+}
+
 func TestExtractLLMResponseContentIgnoresMalformedSSE(t *testing.T) {
 	t.Parallel()
 

@@ -52,6 +52,44 @@ func TestLLMResponseContentEnricherUpdatesEligibleTrace(t *testing.T) {
 	t.Fatalf("llm_response_content=%q, want enriched content", got.LLMResponseContent)
 }
 
+func TestLLMResponseContentEnricherUpdatesWebSocketTraceAfterWriterSuccess(t *testing.T) {
+	t.Parallel()
+
+	store := newEnricherSQLiteStore(t)
+	writer := trace.NewWriter(store, 8)
+	enricher := newLLMResponseContentEnricher(store, nil, 4, time.Second)
+	enricher.Start(context.Background())
+	defer func() {
+		_ = enricher.Shutdown(context.Background())
+	}()
+	attachLLMResponseContentEnricher(writer, enricher)
+	writer.Start(context.Background())
+
+	traceID := "trace-ws-enrich"
+	queued := writer.Enqueue(&trace.Trace{
+		ID:             traceID,
+		Provider:       "openai",
+		Model:          "gpt-5.5",
+		RequestMethod:  "GET",
+		RequestPath:    "/llmgateway/v1/responses",
+		ResponseStatus: 101,
+		ResponseBody: `[
+			{"direction":"client_to_upstream","opcode":"text","payload":{"type":"response.output_text.delta","item_id":"msg_1","delta":"ignore"}},
+			{"direction":"upstream_to_client","opcode":"text","payload":{"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\"city\""}},
+			{"direction":"upstream_to_client","opcode":"text","payload":{"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":":\"Paris\"}"}}
+		]`,
+		Metadata: `{"transport":"websocket","websocket_turn_terminal_type":"response.completed"}`,
+	})
+	if !queued {
+		t.Fatal("Enqueue() returned false")
+	}
+	if err := writer.Shutdown(context.Background()); err != nil {
+		t.Fatalf("writer Shutdown() error: %v", err)
+	}
+
+	waitForLLMResponseContent(t, store, traceID, `"arguments":"{\"city\":\"Paris\"}"`)
+}
+
 func TestLLMResponseContentEnricherSkipsLargeBodyRedactionBypass(t *testing.T) {
 	t.Parallel()
 
@@ -83,6 +121,26 @@ func TestLLMResponseContentEnricherSkipsLargeBodyRedactionBypass(t *testing.T) {
 	if got.LLMResponseContent != "" {
 		t.Fatalf("llm_response_content=%q, want skipped", got.LLMResponseContent)
 	}
+}
+
+func waitForLLMResponseContent(t *testing.T, store trace.TraceStore, traceID, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got, err := store.GetTrace(context.Background(), traceID)
+		if err != nil {
+			t.Fatalf("GetTrace() error: %v", err)
+		}
+		if strings.Contains(got.LLMResponseContent, want) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	got, err := store.GetTrace(context.Background(), traceID)
+	if err != nil {
+		t.Fatalf("GetTrace() error: %v", err)
+	}
+	t.Fatalf("llm_response_content=%q, want containing %s", got.LLMResponseContent, want)
 }
 
 func newEnricherSQLiteStore(t *testing.T) *trace.SQLiteStore {

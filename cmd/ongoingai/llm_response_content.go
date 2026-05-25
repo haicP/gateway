@@ -46,6 +46,10 @@ func extractLLMResponseContentJSON(body []byte, streaming bool) (string, bool) {
 	}
 
 	if !builder.hasParts() {
+		builder.addWebSocketCapturedMessages(body)
+	}
+
+	if !builder.hasParts() {
 		var payload map[string]any
 		if err := json.Unmarshal(body, &payload); err == nil {
 			builder.addJSONPayload(payload)
@@ -59,6 +63,45 @@ func newLLMResponseContentBuilder() *llmResponseContentBuilder {
 	return &llmResponseContentBuilder{
 		byKey: make(map[string]*llmResponseContentPart),
 	}
+}
+
+func (b *llmResponseContentBuilder) addWebSocketCapturedMessages(body []byte) {
+	var messages []map[string]any
+	if err := json.Unmarshal(body, &messages); err != nil {
+		return
+	}
+	for _, message := range messages {
+		if strings.TrimSpace(stringValue(message["direction"])) != "upstream_to_client" {
+			continue
+		}
+		if strings.TrimSpace(stringValue(message["opcode"])) != "text" {
+			continue
+		}
+		payload, ok := webSocketCapturedPayloadMap(message["payload"])
+		if !ok {
+			continue
+		}
+		eventType := stringValue(payload["type"])
+		if eventType == "" {
+			eventType = stringValue(payload["method"])
+		}
+		b.addStreamingPayload(eventType, payload)
+	}
+}
+
+func webSocketCapturedPayloadMap(value any) (map[string]any, bool) {
+	if payload := asMap(value); payload != nil {
+		return payload, true
+	}
+	text := stringValue(value)
+	if strings.TrimSpace(text) == "" {
+		return nil, false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(text), &payload); err != nil {
+		return nil, false
+	}
+	return payload, true
 }
 
 func (b *llmResponseContentBuilder) addJSONPayload(payload map[string]any) {
@@ -162,7 +205,7 @@ func (b *llmResponseContentBuilder) addOpenAIResponsesEvent(eventType string, pa
 	input := stringValue(payload["input"])
 
 	switch {
-	case eventType == "response.completed":
+	case eventType == "response.completed" || eventType == "response.done":
 		if !b.hasParts() {
 			if response := asMap(payload["response"]); response != nil {
 				b.addOpenAIResponsesObject(response)
