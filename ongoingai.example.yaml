@@ -1,19 +1,26 @@
+# Lightweight proxy recorder configuration.
 server:
   host: 0.0.0.0
   port: 8080
 
+# Request detail storage. Use sqlite for a single self-hosted process, or
+# postgres when multiple gateway instances should share one trace store.
 storage:
   driver: sqlite
   path: ./data/ongoingai.db
   # dsn: postgres://user:password@localhost:5432/ongoingai?sslmode=disable
 
+# Provider routes. The gateway strips prefix before forwarding to upstream.
 providers:
   llm:
     upstream: https://api.openai.com
     prefix: /llm
 
+# Request and response detail capture.
 tracing:
+  # When false, headers/status/timing/token metadata are still recorded.
   capture_bodies: false
+  # Maximum captured bytes per request body and response body.
   body_max_size: 1048576
   retention:
     days: 14
@@ -21,6 +28,7 @@ tracing:
     cleanup_daily_at: "02:00"
     cleanup_timezone: Local
 
+# Optional request detail backup to S3-compatible object storage.
 backup:
   request_details:
     enabled: false
@@ -39,30 +47,3 @@ backup:
       region: ""
       endpoint: ""
       force_path_style: false
-
-observability:
-  otel:
-    enabled: false
-    endpoint: localhost:4318
-    insecure: true
-    service_name: ongoingai-gateway
-    traces_enabled: true
-    metrics_enabled: true
-    # prometheus_enabled: false
-    # prometheus_path: /metrics
-    sampling_ratio: 1.0
-    export_timeout_ms: 3000
-    metric_export_interval_ms: 10000
-
-auth:
-  enabled: false
-  header: X-OngoingAI-Gateway-Key
-  keys:
-    - id: team-a-dev-1
-      token: replace-me
-      org_id: org-default
-      workspace_id: workspace-default
-      role: developer
-      permissions:
-        - proxy:write
-        - analytics:read

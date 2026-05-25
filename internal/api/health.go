@@ -14,7 +14,7 @@ type HealthOptions struct {
 	StartedAt     time.Time
 	StorageDriver string
 	StoragePath   string
-	Store         trace.TraceStore
+	Store         trace.TraceCounter
 }
 
 type healthResponse struct {
@@ -35,10 +35,8 @@ func HealthHandler(options HealthOptions) http.Handler {
 		uptime := time.Since(options.StartedAt)
 		traceCount := int64(0)
 		if options.Store != nil {
-			if models, err := options.Store.GetModelStats(r.Context(), trace.AnalyticsFilter{}); err == nil {
-				for _, model := range models {
-					traceCount += model.RequestCount
-				}
+			if count, err := options.Store.CountTraces(r.Context()); err == nil {
+				traceCount = count
 			}
 		}
 

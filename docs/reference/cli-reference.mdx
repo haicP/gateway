@@ -1,23 +1,20 @@
 ---
-title: CLI reference
-description: Use ongoingai commands to start the gateway, validate config, run doctor checks, query live diagnostics, set SDK base URLs, wrap client commands, generate offline reports, and debug trace chains.
+title: CLI Reference
+description: Run the lightweight forwarding and request-recording gateway.
 related:
   title: Next steps
   description: Continue with config details, env overrides, and API contracts.
   links:
     - gateway/reference/config-reference
-    - gateway/reference/cli-json-contracts
     - gateway/reference/env-var-reference
     - gateway/reference/rest-api-reference
 ---
 
 Use this page to run OngoingAI Gateway from the command line.
-It documents command syntax, flags, output behavior, and exit codes.
-For stable scripting schemas for JSON output, see [CLI JSON contracts](/gateway/reference/cli-json-contracts).
 
-## Quick command map
+## Commands
 
-```bash filename="Terminal"
+```bash
 ongoingai serve [--config PATH]
 ongoingai version
 ongoingai --version
@@ -25,403 +22,61 @@ ongoingai -v
 ongoingai config validate [--config PATH]
 ongoingai shell-init [--config PATH]
 ongoingai wrap [--config PATH] -- <command> [args...]
-ongoingai report [--config PATH] [--format text|json] [--from RFC3339|YYYY-MM-DD] [--to RFC3339|YYYY-MM-DD] [--provider NAME] [--model NAME] [--limit N]
-ongoingai debug [last] [--config PATH] [--trace-id ID] [--trace-group-id ID] [--thread-id ID] [--run-id ID] [--format text|json] [--limit N] [--diff] [--bundle-out PATH] [--include-headers] [--include-bodies]
-ongoingai doctor [--config PATH] [--format text|json]
-ongoingai diagnostics [trace-pipeline] [--config PATH] [--base-url URL] [--gateway-key TOKEN] [--auth-header HEADER] [--format text|json] [--timeout DURATION]
 ```
 
-By default, commands read config from `ongoingai.yaml`.
-If the config file is missing, defaults and supported env overrides are used.
+By default, commands read config from `ongoingai.yaml`. If the file is missing,
+defaults and supported environment overrides are used.
 
-Use `ongoingai serve` for normal runtime, and use `config validate` in CI or
-deployment gates before restart.
+## `ongoingai serve`
 
-## Command intent
+Starts the HTTP gateway with configured provider proxy routes, request detail
+recording, optional request-detail backup, and optional trace retention cleanup.
 
-| Command | Purpose |
-| --- | --- |
-| `serve` | Start the gateway HTTP server. |
-| `version` | Print gateway version string. |
-| `config validate` | Load and validate config, then exit. |
-| `shell-init` | Print shell exports for provider base URLs. |
-| `wrap` | Run another command with gateway base URLs injected into env. |
-| `report` | Read trace storage directly and print analytics + recent trace report. |
-| `debug` | Inspect the latest trace (or a specific trace) and print its full lineage chain. |
-| `doctor` | Run local diagnostics for config validity, storage connectivity, route wiring, and auth posture. |
-| `diagnostics` | Query live queue-pressure and dropped-trace diagnostics from a running gateway API. |
-
-## Command reference
-
-### `ongoingai serve`
-
-Start the gateway server with proxy routes and API routes.
-
-Syntax:
-
-```bash filename="Terminal"
-ongoingai serve [--config PATH]
-```
-
-Flags:
-
-| Flag | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--config` | string | `ongoingai.yaml` | Path to config file. |
-
-Behavior:
-- Loads and validates config before startup.
-- Initializes storage and auth components.
-- Logs structured JSON lines to stdout.
-- Shuts down on `SIGINT` or `SIGTERM`.
-
-Exit codes:
-- `0`: Clean shutdown.
-- `1`: Startup or runtime failure.
-- `2`: Flag parse error.
-
-Example:
-
-```bash filename="Terminal"
+```bash
 ongoingai serve --config ongoingai.yaml
 ```
 
-### `ongoingai version` (`--version`, `-v`)
+Exit codes:
 
-Print the gateway version string and exit.
+| Code | Meaning |
+| --- | --- |
+| `0` | Clean shutdown |
+| `1` | Startup or runtime failure |
+| `2` | Flag parse error |
 
-Syntax:
+## `ongoingai version`
 
-```bash filename="Terminal"
+Prints the gateway version string.
+
+```bash
 ongoingai version
 ongoingai --version
 ongoingai -v
 ```
 
-Output:
-- A single version string on stdout.
+## `ongoingai config validate`
 
-Exit codes:
-- `0`: Success.
+Loads and validates config without starting the server.
 
-### `ongoingai config validate`
-
-Validate configuration without starting the server.
-
-Syntax:
-
-```bash filename="Terminal"
-ongoingai config validate [--config PATH]
-```
-
-Flags:
-
-| Flag | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--config` | string | `ongoingai.yaml` | Path to config file. |
-
-Behavior:
-- Loads config with defaults and env overrides.
-- Runs schema and runtime validation checks.
-- Rejects positional arguments.
-
-Output:
-- Success: `config is valid: PATH`
-- Failure: `config is invalid: ...`
-
-Exit codes:
-- `0`: Config is valid.
-- `1`: Config load or validation failed.
-- `2`: Usage or argument parse error.
-
-Example:
-
-```bash filename="Terminal"
+```bash
 ongoingai config validate --config ongoingai.yaml
 ```
 
-### `ongoingai shell-init`
+## `ongoingai shell-init`
 
-Print shell exports for `OPENAI_BASE_URL` and `ANTHROPIC_BASE_URL`.
+Prints shell exports for provider SDK base URLs.
 
-Syntax:
-
-```bash filename="Terminal"
-ongoingai shell-init [--config PATH]
-```
-
-Flags:
-
-| Flag | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--config` | string | `ongoingai.yaml` | Path to config file. |
-
-Behavior:
-- Builds base URLs from server host, server port, and provider prefixes.
-- Maps wildcard hosts such as `0.0.0.0` to `localhost` in generated URLs.
-- Rejects positional arguments.
-
-Output:
-- `export OPENAI_BASE_URL=...`
-- `export ANTHROPIC_BASE_URL=...`
-
-Exit codes:
-- `0`: Success.
-- `1`: Config load failed.
-- `2`: Usage or argument parse error.
-
-Example:
-
-```bash filename="Terminal"
+```bash
 eval "$(ongoingai shell-init)"
 ```
 
-### `ongoingai wrap`
+## `ongoingai wrap`
 
-Run another command with gateway provider base URLs injected into env.
+Runs a command with gateway base URL environment variables injected.
 
-Syntax:
-
-```bash filename="Terminal"
-ongoingai wrap [--config PATH] -- <command> [args...]
+```bash
+ongoingai wrap -- python app.py
 ```
 
-Flags:
-
-| Flag | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--config` | string | `ongoingai.yaml` | Path to config file. |
-
-Behavior:
-- Loads config, then computes gateway base URLs.
-- Sets `OPENAI_BASE_URL` and `ANTHROPIC_BASE_URL` for the wrapped command.
-- Preserves other existing environment variables.
-- Streams wrapped command stdout and stderr directly.
-
-Exit codes:
-- `0`: Wrapped command exited successfully.
-- Wrapped command exit code: Propagated as-is on command failure.
-- `1`: Config load failed or command failed to start.
-- `2`: Usage or argument parse error.
-
-Examples:
-
-```bash filename="Terminal"
-ongoingai wrap -- python my_ai_script.py
-ongoingai wrap -- claude-code "summarize recent traces"
-```
-
-### `ongoingai report`
-
-Generate a full local report from the configured trace store.
-This command does not require `ongoingai serve` to be running.
-
-Syntax:
-
-```bash filename="Terminal"
-ongoingai report [--config PATH] [--format text|json] [--from RFC3339|YYYY-MM-DD] [--to RFC3339|YYYY-MM-DD] [--provider NAME] [--model NAME] [--limit N]
-```
-
-Flags:
-
-| Flag | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--config` | string | `ongoingai.yaml` | Path to config file. |
-| `--format` | string | `text` | Output format: `text` or `json`. |
-| `--from` | string | empty | Inclusive start time (`RFC3339` or `YYYY-MM-DD`). |
-| `--to` | string | empty | Inclusive end time (`RFC3339` or `YYYY-MM-DD`). |
-| `--provider` | string | empty | Filter report data to one provider. |
-| `--model` | string | empty | Filter report data to one model. |
-| `--limit` | int | `10` | Number of recent traces to include (`1-200`). |
-
-Behavior:
-- Loads and validates config.
-- Connects directly to SQLite or Postgres trace storage.
-- Queries usage, cost, models, key stats, provider breakdown, and recent traces.
-- Prints a report without requiring the HTTP server.
-- JSON output includes stable `schema_version: "report.v1"` for scripting contracts and echoes selected filters (including `limit`).
-- Optional time filters are cleaner: `filters.from` and `filters.to` are omitted unless explicitly set via `--from` / `--to`.
-- JSON arrays are deterministic: providers sorted by token volume, models by request count then model name, API keys by request count then hash, and recent traces by timestamp/id.
-
-Exit codes:
-- `0`: Report generated successfully.
-- `1`: Config, storage, or query error.
-- `2`: Usage, flag parse, or invalid filter range.
-
-Examples:
-
-```bash filename="Terminal"
-ongoingai report
-ongoingai report --format json --from 2026-02-01 --to 2026-02-14
-ongoingai report --provider openai --limit 25
-```
-
-### `ongoingai debug`
-
-Inspect one trace and its lineage chain directly from local storage.
-By default it debugs the latest trace, so this works right after `serve` is stopped.
-
-Syntax:
-
-```bash filename="Terminal"
-ongoingai debug [last] [--config PATH] [--trace-id ID] [--trace-group-id ID] [--thread-id ID] [--run-id ID] [--format text|json] [--limit N] [--diff] [--bundle-out PATH] [--include-headers] [--include-bodies]
-```
-
-Flags:
-
-| Flag | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--config` | string | `ongoingai.yaml` | Path to config file. |
-| `--trace-id` | string | empty | Trace ID to debug. If omitted, latest trace is used. |
-| `--trace-group-id` | string | empty | Filter chain by trace group id. |
-| `--thread-id` | string | empty | Filter chain by lineage thread id. |
-| `--run-id` | string | empty | Filter chain by lineage run id. |
-| `--format` | string | `text` | Output format: `text` or `json`. |
-| `--limit` | int | `200` | Maximum lineage checkpoints to include (`1-500`). |
-| `--diff` | bool | `false` | Include redaction-safe checkpoint diffs between consecutive chain steps. |
-| `--bundle-out` | string | empty | Write a reproducible debug bundle directory containing `debug-chain.json` and `manifest.json`. |
-| `--include-headers` | bool | `false` | Include stored request/response headers per checkpoint. |
-| `--include-bodies` | bool | `false` | Include stored request/response bodies per checkpoint. |
-
-Behavior:
-- Loads and validates config.
-- Connects directly to configured trace storage.
-- Resolves latest trace (or `--trace-id` / lineage filters) and finds related lineage checkpoints.
-- Prints ordered chain checkpoints with lineage metadata, tokens, latency, and costs.
-- When `--diff` is enabled, prints redaction-safe deltas (field changes, token/latency deltas, metadata key changes) without exposing raw secret values.
-- When `--bundle-out` is set, exports a support/debug artifact bundle (`debug-chain.json` + `manifest.json`) with file checksums.
-- JSON output includes stable `schema_version: "debug-chain.v1"`, explicit `selection` + `options` blocks, and deterministic checkpoint ordering.
-
-Exit codes:
-- `0`: Debug chain generated successfully.
-- `1`: Config, storage, trace lookup, or query error.
-- `2`: Usage or argument parse error.
-
-Examples:
-
-```bash filename="Terminal"
-ongoingai debug last
-ongoingai debug --trace-id trace_abc123 --format json
-ongoingai debug --trace-group-id group_abc123 --format json
-ongoingai debug --thread-id thread_abc123 --run-id run_abc123
-ongoingai debug --trace-group-id group_abc123 --diff
-ongoingai debug --trace-group-id group_abc123 --diff --bundle-out ./artifacts/debug-bundle
-ongoingai debug --include-headers --include-bodies
-```
-
-### `ongoingai doctor`
-
-Run local gateway diagnostics in one pass.
-This command validates config, tests trace storage connectivity, checks route wiring, and checks auth posture.
-
-Syntax:
-
-```bash filename="Terminal"
-ongoingai doctor [--config PATH] [--format text|json]
-```
-
-Flags:
-
-| Flag | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--config` | string | `ongoingai.yaml` | Path to config file. |
-| `--format` | string | `text` | Output format: `text` or `json`. |
-
-Behavior:
-- Loads and validates config.
-- Connects to configured trace storage and runs a read query.
-- Validates provider route prefixes and verifies proxy wiring can be built.
-- Reports auth posture including header safety and key availability when auth is enabled.
-- Emits deterministic check names: `config`, `storage`, `route_wiring`, and `auth_posture`.
-
-Exit codes:
-- `0`: Diagnostics completed with `pass` or `warn` overall status.
-- `1`: One or more checks failed (`overall_status=fail`) or output write failure.
-- `2`: Usage or argument parse error.
-
-Examples:
-
-```bash filename="Terminal"
-ongoingai doctor
-ongoingai doctor --format json
-ongoingai doctor --config ./ongoingai.yaml --format text
-```
-
-### `ongoingai diagnostics`
-
-Read live trace-pipeline queue pressure and dropped-trace diagnostics from a
-running gateway API endpoint.
-
-Syntax:
-
-```bash filename="Terminal"
-ongoingai diagnostics [trace-pipeline] [--config PATH] [--base-url URL] [--gateway-key TOKEN] [--auth-header HEADER] [--format text|json] [--timeout DURATION]
-```
-
-Flags:
-
-| Flag | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--config` | string | `ongoingai.yaml` | Path to config file used for default base URL and auth header resolution. |
-| `--base-url` | string | derived from config (`http://<host>:<port>`) | Gateway API base URL override. |
-| `--gateway-key` | string | empty | Gateway key token for protected diagnostics routes when auth is enabled. |
-| `--auth-header` | string | config `auth.header` or `X-OngoingAI-Gateway-Key` | Gateway key header name used with `--gateway-key`. |
-| `--format` | string | `text` | Output format: `text` or `json`. |
-| `--timeout` | duration | `5s` | HTTP timeout for the diagnostics request. |
-
-Behavior:
-- Target defaults to `trace-pipeline`; this can be passed positionally for explicit scripting.
-- Requests `GET /api/diagnostics/trace-pipeline`.
-- JSON output preserves the stable diagnostics contract (`trace-pipeline-diagnostics.v1`).
-- Text output summarizes queue pressure, queue depth/high watermark, and dropped-trace counters.
-
-Exit codes:
-- `0`: Diagnostics fetched successfully.
-- `1`: Config resolution, HTTP request, or response parsing error.
-- `2`: Usage or argument parse error.
-
-Examples:
-
-```bash filename="Terminal"
-ongoingai diagnostics
-ongoingai diagnostics --format json
-ongoingai diagnostics trace-pipeline --base-url http://localhost:8080 --gateway-key GATEWAY_KEY
-```
-
-## Process-level behavior
-
-- `ongoingai` with no subcommand is equivalent to `ongoingai serve`.
-- Unknown subcommands print usage and return exit code `2`.
-- `config` without a subcommand prints config usage and returns exit code `2`.
-
-## CLI troubleshooting
-
-### Command exits with code `2`
-
-- Symptom: CLI returns code `2` and prints usage output.
-- Cause: Unknown command, invalid flags, or invalid positional args.
-- Fix: Use one supported command form from the usage section.
-
-### `shell-init` prints values but SDK still uses old base URL
-
-- Symptom: Client traffic bypasses gateway routes.
-- Cause: Shell exports were printed but not evaluated.
-- Fix: Run `eval "$(ongoingai shell-init)"` in the active shell.
-
-### `wrap` returns `failed to start command`
-
-- Symptom: Wrapped command does not start.
-- Cause: Command binary is missing or not in `PATH`.
-- Fix: Install the command or pass an absolute binary path.
-
-### `config validate` reports `config is invalid`
-
-- Symptom: Validation fails before startup.
-- Cause: One or more config fields fail validation rules.
-- Fix: Correct the reported field, then run validation again.
-
-## Next steps
-
-- [Config reference](/gateway/reference/config-reference)
-- [Environment variable reference](/gateway/reference/env-var-reference)
-- [REST API reference](/gateway/reference/rest-api-reference)
+The wrapped command inherits stdin/stdout/stderr and exits with the child
+process exit code.

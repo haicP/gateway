@@ -1,6 +1,6 @@
 ---
-title: Environment variable reference
-description: Override selected ongoingai.yaml fields with ONGOINGAI_* environment variables.
+title: Environment Variable Reference
+description: Override lightweight gateway config fields with environment variables.
 related:
   title: Next steps
   description: Continue with config schema details and CLI validation workflows.
@@ -11,181 +11,66 @@ related:
 ---
 
 Use this page to override gateway config values at process start.
-It documents supported variables, parse rules, and common failure cases.
 
-## How overrides work
+## Load Order
 
-1. Gateway loads built-in defaults.
-2. Gateway applies `ongoingai.yaml` values when the file exists.
-3. Gateway applies supported `ONGOINGAI_*` env vars last.
+1. Built-in defaults.
+2. `ongoingai.yaml` when present.
+3. Supported environment variables.
 
-Env vars override YAML only when the env value is non-empty.
-If you set a variable to an empty string, gateway ignores it.
+Empty environment variable values are ignored.
 
-## Supported variables
+## Supported Variables
 
-| Variable | Type and parse rule | Overrides | Example |
-| --- | --- | --- | --- |
-| `ONGOINGAI_HOST` | string | `server.host` | `ONGOINGAI_HOST=127.0.0.1` |
-| `ONGOINGAI_PORT` | int (`Atoi`) | `server.port` | `ONGOINGAI_PORT=9090` |
-| `ONGOINGAI_STORAGE_DRIVER` | string | `storage.driver` | `ONGOINGAI_STORAGE_DRIVER=postgres` |
-| `ONGOINGAI_STORAGE_PATH` | string | `storage.path` | `ONGOINGAI_STORAGE_PATH=./data/ongoingai.db` |
-| `ONGOINGAI_STORAGE_DSN` | string | `storage.dsn` | `ONGOINGAI_STORAGE_DSN=postgres://user:pass@db:5432/ongoingai?sslmode=require` |
-| `ONGOINGAI_LLM_UPSTREAM` | string | `providers.llm.upstream` | `ONGOINGAI_LLM_UPSTREAM=https://api.openai.com` |
-| `ONGOINGAI_CAPTURE_BODIES` | bool (`ParseBool`) | `tracing.capture_bodies` | `ONGOINGAI_CAPTURE_BODIES=true` |
-| `ONGOINGAI_BODY_MAX_SIZE` | int (`Atoi`) | `tracing.body_max_size` | `ONGOINGAI_BODY_MAX_SIZE=262144` |
-| `ONGOINGAI_TRACE_RETENTION_DAYS` | int (`Atoi`) | `tracing.retention.days` | `ONGOINGAI_TRACE_RETENTION_DAYS=14` |
-| `ONGOINGAI_TRACE_CLEANUP_ENABLED` | bool (`ParseBool`) | `tracing.retention.cleanup_enabled` | `ONGOINGAI_TRACE_CLEANUP_ENABLED=true` |
-| `ONGOINGAI_TRACE_CLEANUP_DAILY_AT` | string (`HH:MM`) | `tracing.retention.cleanup_daily_at` | `ONGOINGAI_TRACE_CLEANUP_DAILY_AT=02:00` |
-| `ONGOINGAI_TRACE_CLEANUP_TIMEZONE` | string | `tracing.retention.cleanup_timezone` | `ONGOINGAI_TRACE_CLEANUP_TIMEZONE=Asia/Shanghai` |
-| `OTEL_SDK_DISABLED` | bool (`ParseBool`) | `observability.otel.enabled` (inverse) | `OTEL_SDK_DISABLED=false` |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | string | `observability.otel.endpoint` | `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` |
-| `OTEL_EXPORTER_OTLP_INSECURE` | bool (`ParseBool`) | `observability.otel.insecure` | `OTEL_EXPORTER_OTLP_INSECURE=true` |
-| `OTEL_SERVICE_NAME` | string | `observability.otel.service_name` | `OTEL_SERVICE_NAME=ongoingai-gateway` |
-| `OTEL_TRACES_EXPORTER` | enum (`otlp`/`none`) | `observability.otel.traces_enabled` | `OTEL_TRACES_EXPORTER=otlp` |
-| `OTEL_METRICS_EXPORTER` | enum (`otlp`/`none`) | `observability.otel.metrics_enabled` | `OTEL_METRICS_EXPORTER=otlp` |
-| `OTEL_TRACES_SAMPLER_ARG` | float (`ParseFloat`) | `observability.otel.sampling_ratio` | `OTEL_TRACES_SAMPLER_ARG=0.25` |
-| `OTEL_EXPORTER_OTLP_TIMEOUT` | int (`Atoi`) | `observability.otel.export_timeout_ms` | `OTEL_EXPORTER_OTLP_TIMEOUT=3000` |
-| `OTEL_METRIC_EXPORT_INTERVAL` | int (`Atoi`) | `observability.otel.metric_export_interval_ms` | `OTEL_METRIC_EXPORT_INTERVAL=10000` |
-| `ONGOINGAI_PROMETHEUS_ENABLED` | bool (`ParseBool`) | `observability.otel.prometheus_enabled` | `ONGOINGAI_PROMETHEUS_ENABLED=true` |
-| `ONGOINGAI_PROMETHEUS_PATH` | string | `observability.otel.prometheus_path` | `ONGOINGAI_PROMETHEUS_PATH=/metrics` |
-| `ONGOINGAI_BACKUP_REQUEST_DETAILS_ENABLED` | bool (`ParseBool`) | `backup.request_details.enabled` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_ENABLED=true` |
-| `ONGOINGAI_BACKUP_REQUEST_DETAILS_TIMEZONE` | string | `backup.request_details.timezone` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_TIMEZONE=Asia/Shanghai` |
-| `ONGOINGAI_BACKUP_REQUEST_DETAILS_DAILY_AT` | string (`HH:MM`) | `backup.request_details.daily_at` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_DAILY_AT=02:00` |
-| `ONGOINGAI_BACKUP_REQUEST_DETAILS_TEMP_DIR` | string | `backup.request_details.temp_dir` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_TEMP_DIR=/var/lib/ongoingai-backup` |
-| `ONGOINGAI_BACKUP_REQUEST_DETAILS_PAGE_SIZE` | int (`Atoi`) | `backup.request_details.page_size` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_PAGE_SIZE=500` |
-| `ONGOINGAI_BACKUP_REQUEST_DETAILS_SHARD_MAX_BYTES` | int64 (`ParseInt`) | `backup.request_details.shard_max_bytes` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_SHARD_MAX_BYTES=209715200` |
-| `ONGOINGAI_BACKUP_REQUEST_DETAILS_RETRY_MAX_ATTEMPTS` | int (`Atoi`) | `backup.request_details.retry.max_attempts` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_RETRY_MAX_ATTEMPTS=5` |
-| `ONGOINGAI_BACKUP_REQUEST_DETAILS_RETRY_INITIAL_BACKOFF_MS` | int (`Atoi`) | `backup.request_details.retry.initial_backoff_ms` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_RETRY_INITIAL_BACKOFF_MS=1000` |
-| `ONGOINGAI_BACKUP_REQUEST_DETAILS_RETRY_MAX_BACKOFF_MS` | int (`Atoi`) | `backup.request_details.retry.max_backoff_ms` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_RETRY_MAX_BACKOFF_MS=30000` |
-| `ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_BUCKET` | string | `backup.request_details.s3.bucket` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_BUCKET=ongoingai-backups` |
-| `ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_PREFIX` | string | `backup.request_details.s3.prefix` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_PREFIX=request-details` |
-| `ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_REGION` | string | `backup.request_details.s3.region` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_REGION=us-east-1` |
-| `ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_ENDPOINT` | string | `backup.request_details.s3.endpoint` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_ENDPOINT=https://s3.example.com` |
-| `ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_FORCE_PATH_STYLE` | bool (`ParseBool`) | `backup.request_details.s3.force_path_style` | `ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_FORCE_PATH_STYLE=true` |
-| `ONGOINGAI_PII_MODE` | string | `pii.mode` | `ONGOINGAI_PII_MODE=redact_storage` |
-| `ONGOINGAI_PII_POLICY_ID` | string | `pii.policy_id` | `ONGOINGAI_PII_POLICY_ID=default/v1` |
-| `ONGOINGAI_PII_HASH_SALT` | string | `pii.replacement.hash_salt` | `ONGOINGAI_PII_HASH_SALT=workspace-salt` |
-| `ONGOINGAI_AUTH_ENABLED` | bool (`ParseBool`) | `auth.enabled` | `ONGOINGAI_AUTH_ENABLED=true` |
-| `ONGOINGAI_AUTH_HEADER` | string | `auth.header` | `ONGOINGAI_AUTH_HEADER=X-Internal-Gateway-Key` |
+| Variable | Type | Overrides |
+| --- | --- | --- |
+| `ONGOINGAI_HOST` | string | `server.host` |
+| `ONGOINGAI_PORT` | int | `server.port` |
+| `ONGOINGAI_STORAGE_DRIVER` | string | `storage.driver` |
+| `ONGOINGAI_STORAGE_PATH` | string | `storage.path` |
+| `ONGOINGAI_STORAGE_DSN` | string | `storage.dsn` |
+| `ONGOINGAI_LLM_UPSTREAM` | string | `providers.llm.upstream` |
+| `ONGOINGAI_CAPTURE_BODIES` | bool | `tracing.capture_bodies` |
+| `ONGOINGAI_BODY_MAX_SIZE` | int | `tracing.body_max_size` |
+| `ONGOINGAI_TRACE_RETENTION_DAYS` | int | `tracing.retention.days` |
+| `ONGOINGAI_TRACE_CLEANUP_ENABLED` | bool | `tracing.retention.cleanup_enabled` |
+| `ONGOINGAI_TRACE_CLEANUP_DAILY_AT` | string `HH:MM` | `tracing.retention.cleanup_daily_at` |
+| `ONGOINGAI_TRACE_CLEANUP_TIMEZONE` | string | `tracing.retention.cleanup_timezone` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_ENABLED` | bool | `backup.request_details.enabled` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_TIMEZONE` | string | `backup.request_details.timezone` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_DAILY_AT` | string `HH:MM` | `backup.request_details.daily_at` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_TEMP_DIR` | string | `backup.request_details.temp_dir` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_PAGE_SIZE` | int | `backup.request_details.page_size` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_SHARD_MAX_BYTES` | int64 | `backup.request_details.shard_max_bytes` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_RETRY_MAX_ATTEMPTS` | int | `backup.request_details.retry.max_attempts` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_RETRY_INITIAL_BACKOFF_MS` | int | `backup.request_details.retry.initial_backoff_ms` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_RETRY_MAX_BACKOFF_MS` | int | `backup.request_details.retry.max_backoff_ms` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_BUCKET` | string | `backup.request_details.s3.bucket` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_PREFIX` | string | `backup.request_details.s3.prefix` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_REGION` | string | `backup.request_details.s3.region` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_ENDPOINT` | string | `backup.request_details.s3.endpoint` |
+| `ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_FORCE_PATH_STYLE` | bool | `backup.request_details.s3.force_path_style` |
 
-OpenTelemetry auto-enable behavior:
-- If any OTEL exporter/service/sampler variable above is set, gateway enables
-  OTEL by default.
-- `OTEL_SDK_DISABLED=true` always disables gateway OTEL instrumentation.
-- `OTEL_METRICS_EXPORTER=prometheus` enables Prometheus scrape mode and
-  disables OTLP push metrics. This is equivalent to setting
-  `prometheus_enabled: true` and `metrics_enabled: false`.
+`providers.*.prefix` does not currently have an environment override; set it in YAML.
 
-## Values without env overrides
+## Validation
 
-The following config areas do not support env var overrides in this release:
-
-- `providers.*.prefix`
-- `pii.stages.*`
-- `pii.detectors.*`
-- `pii.headers.denylist`
-- `pii.body.key_denylist`
-- `pii.replacement.format`
-- `auth.keys`
-- `limits.*`
-
-## Type and validation behavior
-
-- `ONGOINGAI_PORT`, `ONGOINGAI_BODY_MAX_SIZE`, and `ONGOINGAI_TRACE_RETENTION_DAYS` must parse as integers.
-- `ONGOINGAI_CAPTURE_BODIES`, `ONGOINGAI_AUTH_ENABLED`, trace cleanup bool fields, and backup bool fields must parse as booleans.
-- Trace cleanup `DAILY_AT` must use `HH:MM`, and trace cleanup timezone must be a valid IANA timezone when cleanup is enabled.
-- OpenTelemetry bool fields (`OTEL_SDK_DISABLED`, `OTEL_EXPORTER_OTLP_INSECURE`) must parse as booleans.
-- Backup integer fields (`PAGE_SIZE`, `SHARD_MAX_BYTES`, and retry intervals) must parse as integers.
-- OpenTelemetry integer fields (`OTEL_EXPORTER_OTLP_TIMEOUT`, `OTEL_METRIC_EXPORT_INTERVAL`) must parse as integers.
-- OpenTelemetry sampling field (`OTEL_TRACES_SAMPLER_ARG`) must parse as float.
-- OpenTelemetry exporter selectors (`OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`) accept `otlp` or `none`.
-- String variables are applied as-is, then checked by config validation.
-- If a string override is invalid for the target field, `ongoingai config validate`
-  fails with a field-specific error.
-
-Examples:
-- `ONGOINGAI_STORAGE_DRIVER=invalid` fails with:
-  `storage.driver must be one of sqlite, postgres`.
-- `ONGOINGAI_LLM_UPSTREAM=api.openai.com` fails with:
-  `providers.llm.upstream must include scheme and host`.
+- Integer values must parse as base-10 integers.
+- Boolean values must parse with Go `strconv.ParseBool`.
+- Retention and backup times must use `HH:MM`.
+- Timezones must be valid IANA timezone names when the related scheduler is enabled.
+- `storage.driver` must be `sqlite` or `postgres`.
+- `providers.llm.upstream` and backup S3 endpoints must include scheme and host.
 
 ## Examples
 
-### Override server port for one command
-
-```bash filename="Terminal"
+```bash
 ONGOINGAI_PORT=9090 ongoingai config validate --config ongoingai.yaml
 ONGOINGAI_PORT=9090 ongoingai serve --config ongoingai.yaml
 ```
 
-### Enable Postgres without editing YAML
-
-```bash filename="Terminal"
+```bash
 ONGOINGAI_STORAGE_DRIVER=postgres \
-ONGOINGAI_STORAGE_DSN=POSTGRES_DSN \
-ongoingai config validate --config ongoingai.yaml
-```
-
-Placeholder:
-- `POSTGRES_DSN`: Postgres DSN, for example
-  `postgres://user:pass@db.example.com:5432/ongoingai?sslmode=require`.
-
-### Enable gateway auth with a custom header
-
-```bash filename="Terminal"
-ONGOINGAI_AUTH_ENABLED=true \
-ONGOINGAI_AUTH_HEADER=X-Internal-Gateway-Key \
+ONGOINGAI_STORAGE_DSN=postgres://user:pass@db:5432/ongoingai?sslmode=require \
 ongoingai serve --config ongoingai.yaml
 ```
-
-## Verification workflow
-
-1. Set one override and validate config:
-
-   ```bash filename="Terminal"
-   ONGOINGAI_PORT=9090 ongoingai config validate --config ongoingai.yaml
-   ```
-
-2. Start the gateway with the same override:
-
-   ```bash filename="Terminal"
-   ONGOINGAI_PORT=9090 ongoingai serve --config ongoingai.yaml
-   ```
-
-You should see a startup log line with `port` set to `9090`.
-
-## Troubleshooting
-
-### `invalid ONGOINGAI_PORT`
-
-- Symptom: `ongoingai config validate` fails before field validation.
-- Cause: `ONGOINGAI_PORT` is not an integer.
-- Fix: Set an integer value such as `8080` or `9090`.
-
-### Invalid bool/float OTEL env values
-
-- Symptom: Config load fails with an invalid bool env var error.
-- Cause: A standard OTEL bool (`OTEL_SDK_DISABLED`,
-  `OTEL_EXPORTER_OTLP_INSECURE`) or float (`OTEL_TRACES_SAMPLER_ARG`) env
-  value does not parse.
-- Fix: Use valid bool values such as `true`/`false` and decimal floats such as
-  `0.25`.
-
-### Env var set but value does not change
-
-- Symptom: Gateway behavior still matches YAML.
-- Cause: Env var is empty, so override is skipped.
-- Fix: Set a non-empty env var value.
-
-### Expected env override is missing
-
-- Symptom: You cannot override a field with env vars.
-- Cause: That field does not have env mapping in this release.
-- Fix: Set the value in `ongoingai.yaml` instead.
-
-## Next steps
-
-- [Config reference](/gateway/reference/config-reference)
-- [CLI reference](/gateway/reference/cli-reference)
-- [Quickstart](/gateway/get-started/quickstart)

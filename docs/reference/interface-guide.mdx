@@ -1,0 +1,64 @@
+---
+title: 接口说明
+description: 轻量级转发记录网关的 HTTP 接口说明。
+related:
+  title: 相关参考
+  description: 查看更细的响应字段和配置项。
+  links:
+    - gateway/reference/rest-api-reference
+    - gateway/reference/config-reference
+---
+
+本文汇总轻量级网关运行时实际暴露的 HTTP 接口。当前目标只保留上游请求透传、请求详情记录、请求详情备份和 trace 保留清理，不再暴露网关密钥管理、analytics、diagnostics、Prometheus 或审计相关接口。
+
+## 基础约定
+
+- 默认基础地址：`http://localhost:8080`，以 `server.host` 和 `server.port` 配置为准。
+- 管理 API 前缀固定为 `/api`。
+- 模型代理前缀来自 `providers.<name>.prefix`。网关匹配该前缀后，会剥离前缀并转发到 `providers.<name>.upstream`。
+- 上游 Provider 密钥继续按上游要求传递，例如 `Authorization` 或 `X-API-Key`。网关只透传，不在配置、日志或 trace 里明文保存。
+- 响应会携带 `X-OngoingAI-Correlation-ID`，用于关联日志和 trace 元数据。
+
+## 接口总览
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| `GET` | `/` | 返回网关服务元数据 |
+| `GET` | `/api/health` | 健康检查和基础存储状态 |
+| `ANY` | `/{provider-prefix}/*` | 模型服务反向代理，剥离 provider prefix 后转发到上游 |
+| `GET` | `/api/traces` | 分页查询已记录请求 |
+| `GET` | `/api/traces/:id` | 查询单条请求详情 |
+| `GET` | `/api/traces/:id/replay` | 查询 trace lineage replay 信息 |
+| `POST` | `/api/traces/:id/fork` | 生成下一次请求可用的 lineage headers |
+
+## 代理接口
+
+示例配置：
+
+```yaml
+providers:
+  llm:
+    upstream: https://api.openai.com
+    prefix: /llm
+```
+
+请求 `/llm/v1/chat/completions` 会转发到 `https://api.openai.com/v1/chat/completions`。
+
+```bash
+curl http://localhost:8080/llm/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}'
+```
+
+## Trace 查询
+
+`GET /api/traces` 支持按 provider、model、status、时间范围和 token 数过滤。`GET /api/traces/:id` 返回请求/响应头、可选 body、状态码、耗时、token、成本估算和元数据。
+
+请求头中的 `Authorization`、`Cookie`、`Set-Cookie`、`X-API-Key`、`X-OngoingAI-Gateway-Key` 会在写入 trace 前固定脱敏。是否记录请求体和响应体由 `tracing.capture_bodies` 控制。
+
+## 记录维护
+
+`tracing.retention.cleanup_enabled=true` 时，网关会按 `cleanup_daily_at` 和 `cleanup_timezone` 定时删除超过 `retention.days` 的 trace。
+
+`backup.request_details.enabled=true` 时，网关会按日把请求详情导出到 S3 兼容对象存储。该能力是记录链路的一部分，不新增 HTTP 接口。

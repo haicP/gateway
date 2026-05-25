@@ -20,13 +20,9 @@ import (
 	_ "time/tzdata" // embed IANA timezone data for scratch container images
 
 	"github.com/ongoingai/gateway/internal/api"
-	"github.com/ongoingai/gateway/internal/auth"
 	"github.com/ongoingai/gateway/internal/backup"
 	"github.com/ongoingai/gateway/internal/config"
-	"github.com/ongoingai/gateway/internal/configstore"
 	"github.com/ongoingai/gateway/internal/correlation"
-	"github.com/ongoingai/gateway/internal/limits"
-	"github.com/ongoingai/gateway/internal/observability"
 	"github.com/ongoingai/gateway/internal/pathutil"
 	"github.com/ongoingai/gateway/internal/providers"
 	"github.com/ongoingai/gateway/internal/proxy"
@@ -36,19 +32,12 @@ import (
 
 const defaultConfigPath = "ongoingai.yaml"
 
-const gatewayKeyRefreshInterval = 30 * time.Second
-const gatewayKeyCacheMaxStaleness = 60 * time.Second
 const traceWriterShutdownTimeout = 5 * time.Second
-const otelShutdownTimeout = 5 * time.Second
 const requestDetailsBackupSchedulerShutdownTimeout = 5 * time.Second
 const traceRetentionCleanupSchedulerShutdownTimeout = 5 * time.Second
 const serverReadHeaderTimeout = 10 * time.Second
 const serverReadTimeout = 30 * time.Second
 const serverIdleTimeout = 2 * time.Minute
-
-var newPostgresGatewayKeyStore = func(dsn string) (configstore.GatewayKeyStore, error) {
-	return configstore.NewPostgresStore(dsn)
-}
 
 type asyncTraceWriter interface {
 	Start(ctx context.Context)
@@ -59,18 +48,6 @@ type asyncTraceWriter interface {
 
 type traceWriteFailureHandlerSetter interface {
 	SetWriteFailureHandler(handler trace.WriteFailureHandler)
-}
-
-type traceWriterMetricsSetter interface {
-	SetMetrics(m *trace.WriterMetrics)
-}
-
-type traceWriterQueueLenProvider interface {
-	QueueLen() int
-}
-
-type traceWriterQueueCapProvider interface {
-	QueueCap() int
 }
 
 var newTraceWriter = func(store trace.TraceStore, bufferSize int) asyncTraceWriter {
@@ -91,108 +68,6 @@ var newTraceRetentionCleanupScheduler = func(cfg config.TraceRetentionConfig, st
 }
 
 var signalNotifyContext = signal.NotifyContext
-
-type gatewayAuthorizerCache struct {
-	mu          sync.RWMutex
-	authorizer  *auth.Authorizer
-	lastRefresh time.Time
-}
-
-func newGatewayAuthorizerCache(authorizer *auth.Authorizer, refreshedAt time.Time) *gatewayAuthorizerCache {
-	return &gatewayAuthorizerCache{
-		authorizer:  authorizer,
-		lastRefresh: refreshedAt.UTC(),
-	}
-}
-
-func (c *gatewayAuthorizerCache) Current(maxStaleness time.Duration) (*auth.Authorizer, error) {
-	if c == nil {
-		return nil, errors.New("gateway authorizer cache is not initialized")
-	}
-
-	c.mu.RLock()
-	authorizer := c.authorizer
-	lastRefresh := c.lastRefresh
-	c.mu.RUnlock()
-
-	if authorizer == nil {
-		return nil, errors.New("gateway authorizer cache has no authorizer")
-	}
-	// Fail closed when the cache is too old so revoked keys are not accepted
-	// indefinitely if background refresh is failing.
-	if maxStaleness > 0 && !lastRefresh.IsZero() && time.Since(lastRefresh) > maxStaleness {
-		return nil, fmt.Errorf("gateway authorizer cache is stale (last refresh %s)", lastRefresh.Format(time.RFC3339))
-	}
-	return authorizer, nil
-}
-
-func (c *gatewayAuthorizerCache) Set(authorizer *auth.Authorizer, refreshedAt time.Time) {
-	if c == nil {
-		return
-	}
-	c.mu.Lock()
-	c.authorizer = authorizer
-	c.lastRefresh = refreshedAt.UTC()
-	c.mu.Unlock()
-}
-
-func startGatewayAuthRefresher(
-	ctx context.Context,
-	cache *gatewayAuthorizerCache,
-	cfg config.Config,
-	gatewayKeyStore configstore.GatewayKeyStore,
-	logger *slog.Logger,
-) {
-	startGatewayAuthRefresherWithInterval(ctx, cache, cfg, gatewayKeyStore, logger, gatewayKeyRefreshInterval)
-}
-
-func startGatewayAuthRefresherWithInterval(
-	ctx context.Context,
-	cache *gatewayAuthorizerCache,
-	cfg config.Config,
-	gatewayKeyStore configstore.GatewayKeyStore,
-	logger *slog.Logger,
-	refreshInterval time.Duration,
-) {
-	if refreshInterval <= 0 {
-		refreshInterval = gatewayKeyRefreshInterval
-	}
-
-	// Refresh the in-memory authorizer out-of-band so proxy requests avoid config
-	// store round-trips while still picking up revocations/rotations quickly.
-	ticker := time.NewTicker(refreshInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			keys, err := loadGatewayAuthKeys(ctx, cfg, logger, gatewayKeyStore)
-			if err != nil {
-				if logger != nil {
-					logger.Error("failed to refresh gateway key cache", "error", err)
-				}
-				continue
-			}
-			nextAuthorizer, err := auth.NewAuthorizer(auth.Options{
-				Enabled: cfg.Auth.Enabled,
-				Header:  cfg.Auth.Header,
-				Keys:    keys,
-			})
-			if err != nil {
-				if logger != nil {
-					logger.Error("failed to rebuild authorizer from refreshed gateway keys", "error", err)
-				}
-				continue
-			}
-			cache.Set(nextAuthorizer, time.Now().UTC())
-			if logger != nil {
-				logger.Debug("refreshed gateway key cache", "key_count", len(keys))
-			}
-		}
-	}
-}
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -215,14 +90,6 @@ func run(args []string) int {
 		return runShellInit(args[1:], os.Stdout, os.Stderr)
 	case "wrap":
 		return runWrap(args[1:], os.Stdout, os.Stderr)
-	case "report":
-		return runReport(args[1:], os.Stdout, os.Stderr)
-	case "debug":
-		return runDebug(args[1:], os.Stdout, os.Stderr)
-	case "doctor":
-		return runDoctor(args[1:], os.Stdout, os.Stderr)
-	case "diagnostics":
-		return runDiagnostics(args[1:], os.Stdout, os.Stderr)
 	default:
 		printUsage(os.Stderr)
 		return 2
@@ -351,16 +218,7 @@ func runServe(args []string) int {
 		return 1
 	}
 
-	logger := slog.New(observability.NewTraceLogHandler(
-		slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}),
-	))
-	otelRuntime, otelErr := observability.Setup(context.Background(), cfg.Observability.OTel, version.String(), logger)
-	if otelErr != nil {
-		logger.Error("failed to initialize opentelemetry; continuing with instrumentation disabled", "error", otelErr)
-	}
-	if otelRuntime != nil {
-		defer shutdownOpenTelemetry(logger, otelRuntime, otelShutdownTimeout)
-	}
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	var traceStore trace.TraceStore
 	var traceWriter asyncTraceWriter
@@ -403,27 +261,8 @@ func runServe(args []string) int {
 		fmt.Fprintf(os.Stderr, "unsupported storage.driver %q\n", cfg.Storage.Driver)
 		return 1
 	}
-	llmResponseContentEnricher := newLLMResponseContentEnricher(
-		traceStore,
-		logger,
-		llmResponseContentEnrichBufferSize,
-		llmResponseContentEnrichTimeout,
-	)
-	if llmResponseContentEnricher != nil {
-		llmResponseContentEnricher.Start(context.Background())
-		defer shutdownLLMResponseContentEnricher(logger, llmResponseContentEnricher, llmResponseContentShutdownTimeout)
-	}
-	attachTraceWriterMetrics(traceWriter, otelRuntime, llmResponseContentEnricher)
-	attachTraceWriterFailureLogging(logger, traceWriter, func(failure trace.WriteFailure) {
-		if otelRuntime != nil {
-			otelRuntime.RecordTraceWriteFailure(failure.Operation, failure.FailedCount, failure.ErrorClass, cfg.Storage.Driver)
-		}
-	})
+	attachTraceWriterFailureLogging(logger, traceWriter, nil)
 	defer shutdownTraceWriter(logger, traceWriter, traceWriterShutdownTimeout)
-	var tracePipelineReader trace.TracePipelineDiagnosticsReader
-	if reader, ok := traceWriter.(trace.TracePipelineDiagnosticsReader); ok {
-		tracePipelineReader = reader
-	}
 	var backupScheduler requestDetailsBackupScheduler
 	if cfg.Backup.RequestDetails.Enabled {
 		backupScheduler, err = newRequestDetailsBackupScheduler(cfg.Backup.RequestDetails, traceStore, logger)
@@ -441,57 +280,18 @@ func runServe(args []string) int {
 		}
 	}
 
-	gatewayKeyStore, err := newGatewayKeyStore(cfg)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to initialize gateway key store: %v\n", err)
-		return 1
-	}
-	defer func() {
-		if err := gatewayKeyStore.Close(); err != nil {
-			logger.Error("failed to close gateway key store", "error", err)
-		}
-	}()
-
-	authKeys, err := loadGatewayAuthKeys(context.Background(), cfg, logger, gatewayKeyStore)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to initialize auth config: %v\n", err)
-		return 1
-	}
-	authorizer, err := auth.NewAuthorizer(auth.Options{
-		Enabled: cfg.Auth.Enabled,
-		Header:  cfg.Auth.Header,
-		Keys:    authKeys,
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to initialize auth config: %v\n", err)
-		return 1
-	}
-
 	providerRegistry := providers.DefaultRegistry()
-	proxyAuditRecorder := newProxyAuthAuditRecorder(logger)
-	gatewayKeyAuditRecorder := newGatewayKeyAuditRecorder(logger)
-	apiHandler := api.NewRouter(api.RouterOptions{
-		AppVersion:              version.String(),
-		Store:                   traceStore,
-		StorageDriver:           cfg.Storage.Driver,
-		StoragePath:             cfg.Storage.Path,
-		TracePipelineReader:     tracePipelineReader,
-		GatewayAuthHeader:       cfg.Auth.Header,
-		GatewayKeyStore:         gatewayKeyStore,
-		GatewayKeyAuditRecorder: gatewayKeyAuditRecorder,
+	apiHandler := api.NewCoreRouter(api.RouterOptions{
+		AppVersion:    version.String(),
+		Store:         traceStore,
+		StorageDriver: cfg.Storage.Driver,
+		StoragePath:   cfg.Storage.Path,
 	})
 	proxyOptions := proxy.HandlerOptions{}
-	if otelRuntime != nil {
-		proxyOptions.Transport = otelRuntime.WrapHTTPTransport(http.DefaultTransport)
-	}
 	proxyHandler, err := proxy.NewHandlerWithOptions(proxyRoutesFromConfig(cfg), logger, apiHandler, proxyOptions)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to configure proxy routes: %v\n", err)
 		return 1
-	}
-	guardedProxyHandler := piiGuardrailMiddleware(cfg, logger, proxyHandler)
-	if otelRuntime != nil {
-		guardedProxyHandler = otelRuntime.WrapRouteSpan(guardedProxyHandler)
 	}
 
 	captureSink := func(exchange *proxy.CapturedExchange) {
@@ -505,38 +305,7 @@ func runServe(args []string) int {
 		if enqueueCtx == nil {
 			enqueueCtx = context.Background()
 		}
-		if otelRuntime != nil {
-			otelRuntime.RecordProviderRequest(
-				enqueueCtx,
-				traceRecord.Provider,
-				traceRecord.Model,
-				exchange.GatewayOrgID,
-				exchange.GatewayWorkspaceID,
-				exchange.Path,
-				exchange.StatusCode,
-				exchange.DurationMS,
-			)
-			otelRuntime.RecordProxyRequest(
-				enqueueCtx,
-				traceRecord.Provider,
-				traceRecord.Model,
-				exchange.GatewayOrgID,
-				exchange.GatewayWorkspaceID,
-				exchange.Path,
-				exchange.StatusCode,
-				exchange.DurationMS,
-			)
-		}
-		_, endEnqueueSpan := otelRuntime.StartTraceEnqueueSpan(
-			enqueueCtx,
-			traceRecord.Provider,
-			traceRecord.Model,
-			exchange.GatewayOrgID,
-			exchange.GatewayWorkspaceID,
-			exchange.Path,
-		)
 		queued := traceWriter.Enqueue(traceRecord)
-		endEnqueueSpan(queued)
 
 		if !queued {
 			traceRecord.CleanupBodyFiles()
@@ -546,16 +315,6 @@ func runServe(args []string) int {
 				"path", exchange.Path,
 				"status", exchange.StatusCode,
 			)
-			if otelRuntime != nil {
-				otelRuntime.RecordTraceQueueDrop(
-					traceRecord.Provider,
-					traceRecord.Model,
-					exchange.GatewayOrgID,
-					exchange.GatewayWorkspaceID,
-					exchange.Path,
-					exchange.StatusCode,
-				)
-			}
 		}
 
 		logger.DebugContext(enqueueCtx,
@@ -578,59 +337,8 @@ func runServe(args []string) int {
 		ParseBodies:  true,
 		MaxBodySize:  cfg.Tracing.BodyMaxSize,
 		ParseMaxSize: metadataParseMaxSize,
-	}, captureSink, guardedProxyHandler)
-	if otelRuntime != nil {
-		captureHandler = otelRuntime.SpanEnrichmentMiddleware(captureHandler)
-	}
-	gatewayLimiter := limits.NewGatewayLimiter(traceStore, limits.Config{
-		PerKey: limits.Policy{
-			RequestsPerMinute: cfg.Limits.PerKey.RequestsPerMinute,
-			MaxTokensPerDay:   cfg.Limits.PerKey.MaxTokensPerDay,
-			MaxCostUSDPerDay:  cfg.Limits.PerKey.MaxCostUSDPerDay,
-		},
-		PerWorkspace: limits.Policy{
-			RequestsPerMinute: cfg.Limits.PerWorkspace.RequestsPerMinute,
-			MaxTokensPerDay:   cfg.Limits.PerWorkspace.MaxTokensPerDay,
-			MaxCostUSDPerDay:  cfg.Limits.PerWorkspace.MaxCostUSDPerDay,
-		},
-	})
-	authOptions := auth.MiddlewareOptions{
-		APIPrefix:     "/api",
-		Providers:     authProviderRoutesFromConfig(cfg),
-		ProxyLimiter:  gatewayLimiter.CheckRequest,
-		AuditRecorder: proxyAuditRecorder,
-	}
-	if usageTracker, ok := gatewayKeyStore.(configstore.GatewayKeyUsageTracker); ok {
-		authOptions.ProxyUsageRecorder = newGatewayKeyProxyUsageRecorder(logger, usageTracker)
-	}
-	protectedHandler := auth.Middleware(authorizer, authOptions, captureHandler)
-	var authorizerCache *gatewayAuthorizerCache
-	if cfg.Auth.Enabled && strings.TrimSpace(cfg.Storage.Driver) == "postgres" {
-		authorizerCache = newGatewayAuthorizerCache(authorizer, time.Now().UTC())
-		protectedHandler = auth.DynamicMiddleware(func(_ *http.Request) (*auth.Authorizer, error) {
-			return authorizerCache.Current(gatewayKeyCacheMaxStaleness)
-		}, authOptions, captureHandler)
-	}
-	if otelRuntime != nil {
-		protectedHandler = otelRuntime.WrapAuthMiddleware(protectedHandler)
-	}
-
-	serverHandler := protectedHandler
-	if otelRuntime != nil {
-		serverHandler = otelRuntime.WrapHTTPHandler(serverHandler)
-	}
-	if otelRuntime != nil && otelRuntime.PrometheusHandler() != nil {
-		promPath := cfg.Observability.OTel.PrometheusPath
-		promHandler := otelRuntime.PrometheusHandler()
-		inner := serverHandler
-		serverHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == promPath {
-				promHandler.ServeHTTP(w, r)
-				return
-			}
-			inner.ServeHTTP(w, r)
-		})
-	}
+	}, captureSink, proxyHandler)
+	serverHandler := captureHandler
 	server := newGatewayServer(cfg, logger, serverHandler)
 
 	logger.Info(
@@ -641,9 +349,7 @@ func runServe(args []string) int {
 		"storage_driver", cfg.Storage.Driver,
 		"providers", configuredProviderSummaries(cfg),
 		"config_path", *configPath,
-		"auth_enabled", cfg.Auth.Enabled,
-		"prometheus_enabled", cfg.Observability.OTel.PrometheusEnabled,
-		"prometheus_path", cfg.Observability.OTel.PrometheusPath,
+		"mode", "lightweight_proxy_recorder",
 		"request_details_backup_enabled", cfg.Backup.RequestDetails.Enabled,
 		"trace_retention_cleanup_enabled", cfg.Tracing.Retention.CleanupEnabled,
 		"trace_retention_days", cfg.Tracing.Retention.Days,
@@ -658,9 +364,6 @@ func runServe(args []string) int {
 	if traceRetentionScheduler != nil {
 		traceRetentionScheduler.Start(ctx)
 		defer shutdownTraceRetentionCleanupScheduler(logger, traceRetentionScheduler, traceRetentionCleanupSchedulerShutdownTimeout)
-	}
-	if authorizerCache != nil {
-		go startGatewayAuthRefresher(ctx, authorizerCache, cfg, gatewayKeyStore, logger)
 	}
 
 	errCh := make(chan error, 1)
@@ -969,177 +672,11 @@ func printUsage(out *os.File) {
 	fmt.Fprintln(out, "  ongoingai config validate [--config path/to/ongoingai.yaml]")
 	fmt.Fprintln(out, "  ongoingai shell-init [--config path/to/ongoingai.yaml]")
 	fmt.Fprintln(out, "  ongoingai wrap [--config path/to/ongoingai.yaml] -- <command> [args...]")
-	fmt.Fprintln(out, "  ongoingai report [--config path/to/ongoingai.yaml] [--format text|json] [--from RFC3339|YYYY-MM-DD] [--to RFC3339|YYYY-MM-DD] [--provider NAME] [--model NAME] [--limit N]")
-	fmt.Fprintln(out, "  ongoingai debug [last] [--config path/to/ongoingai.yaml] [--trace-id ID] [--trace-group-id ID] [--thread-id ID] [--run-id ID] [--format text|json] [--limit N] [--diff] [--bundle-out PATH] [--include-headers] [--include-bodies]")
-	fmt.Fprintln(out, "  ongoingai doctor [--config path/to/ongoingai.yaml] [--format text|json]")
-	fmt.Fprintln(out, "  ongoingai diagnostics [trace-pipeline] [--config path/to/ongoingai.yaml] [--base-url URL] [--gateway-key TOKEN] [--auth-header HEADER] [--format text|json] [--timeout DURATION]")
 }
 
 func printConfigUsage(out io.Writer) {
 	fmt.Fprintln(out, "Usage:")
 	fmt.Fprintln(out, "  ongoingai config validate [--config path/to/ongoingai.yaml]")
-}
-
-func newGatewayKeyStore(cfg config.Config) (configstore.GatewayKeyStore, error) {
-	if strings.TrimSpace(cfg.Storage.Driver) == "postgres" {
-		store, err := newPostgresGatewayKeyStore(cfg.Storage.DSN)
-		if err != nil {
-			return nil, err
-		}
-		return store, nil
-	}
-	return configstore.NewStaticStore(configStoreKeysFromConfig(cfg.Auth.Keys)), nil
-}
-
-func loadGatewayAuthKeys(ctx context.Context, cfg config.Config, logger *slog.Logger, gatewayKeyStore configstore.GatewayKeyStore) ([]auth.KeyConfig, error) {
-	configKeys := configStoreKeysFromConfig(cfg.Auth.Keys)
-	if !cfg.Auth.Enabled {
-		return authKeysFromStore(configKeys), nil
-	}
-	if strings.TrimSpace(cfg.Storage.Driver) != "postgres" {
-		return authKeysFromStore(configKeys), nil
-	}
-	if gatewayKeyStore == nil {
-		return nil, fmt.Errorf("gateway key store is not configured")
-	}
-
-	keys, err := gatewayKeyStore.ListGatewayKeys(ctx, configstore.GatewayKeyFilter{})
-	if err != nil {
-		return nil, fmt.Errorf("load gateway keys from postgres config store: %w", err)
-	}
-	if len(keys) == 0 {
-		if logger != nil {
-			logger.Info("postgres config store has no active gateway keys; using yaml auth.keys fallback", "fallback_key_count", len(configKeys))
-		}
-		return authKeysFromStore(configKeys), nil
-	}
-	if logger != nil {
-		logger.Info("loaded gateway keys from postgres config store", "key_count", len(keys))
-	}
-	return authKeysFromStore(keys), nil
-}
-
-func configStoreKeysFromConfig(keys []config.GatewayKeyConfig) []configstore.GatewayKey {
-	if len(keys) == 0 {
-		return nil
-	}
-
-	out := make([]configstore.GatewayKey, 0, len(keys))
-	for _, key := range keys {
-		out = append(out, configstore.GatewayKey{
-			ID:          key.ID,
-			Token:       key.Token,
-			OrgID:       key.OrgID,
-			WorkspaceID: key.WorkspaceID,
-			Team:        key.Team,
-			Name:        key.Name,
-			Description: key.Description,
-			CreatedBy:   key.CreatedBy,
-			Role:        key.Role,
-			Permissions: append([]string(nil), key.Permissions...),
-		})
-	}
-	return out
-}
-
-func authKeysFromStore(keys []configstore.GatewayKey) []auth.KeyConfig {
-	if len(keys) == 0 {
-		return nil
-	}
-
-	out := make([]auth.KeyConfig, 0, len(keys))
-	for _, key := range keys {
-		out = append(out, auth.KeyConfig{
-			ID:          key.ID,
-			Token:       key.Token,
-			TokenHash:   key.TokenHash,
-			OrgID:       key.OrgID,
-			WorkspaceID: key.WorkspaceID,
-			Team:        key.Team,
-			Role:        key.Role,
-			Permissions: append([]string(nil), key.Permissions...),
-		})
-	}
-	return out
-}
-
-func newProxyAuthAuditRecorder(logger *slog.Logger) auth.AuditRecorder {
-	if logger == nil {
-		return nil
-	}
-	return func(req *http.Request, event auth.AuditEvent) {
-		logger.WarnContext(req.Context(),
-			"audit gateway auth deny",
-			"correlation_id", requestCorrelationID(req),
-			"audit_action", strings.TrimSpace(event.Action),
-			"audit_outcome", strings.TrimSpace(event.Outcome),
-			"audit_reason", strings.TrimSpace(event.Reason),
-			"status_code", event.StatusCode,
-			"path", strings.TrimSpace(event.Path),
-			"audit_resource", strings.TrimSpace(event.Resource),
-			"audit_resource_action", strings.TrimSpace(event.ResourceAction),
-			"audit_scope", strings.TrimSpace(event.Scope),
-			"provider", strings.TrimSpace(event.Provider),
-			"required_permission", string(event.RequiredPermission),
-			"key_id", strings.TrimSpace(event.KeyID),
-			"org_id", strings.TrimSpace(event.OrgID),
-			"workspace_id", strings.TrimSpace(event.WorkspaceID),
-			"limit_code", strings.TrimSpace(event.LimitCode),
-		)
-	}
-}
-
-func newGatewayKeyAuditRecorder(logger *slog.Logger) api.GatewayKeyAuditRecorder {
-	if logger == nil {
-		return nil
-	}
-	return func(req *http.Request, event api.GatewayKeyAuditEvent) {
-		logger.Info(
-			"audit gateway key lifecycle",
-			"correlation_id", requestCorrelationID(req),
-			"audit_action", strings.TrimSpace(event.Action),
-			"audit_outcome", strings.TrimSpace(event.Outcome),
-			"audit_reason", strings.TrimSpace(event.Reason),
-			"status_code", event.StatusCode,
-			"actor_key_id", strings.TrimSpace(event.ActorKeyID),
-			"org_id", strings.TrimSpace(event.OrgID),
-			"workspace_id", strings.TrimSpace(event.WorkspaceID),
-			"target_key_id", strings.TrimSpace(event.TargetKeyID),
-		)
-	}
-}
-
-func newGatewayKeyProxyUsageRecorder(logger *slog.Logger, usageTracker configstore.GatewayKeyUsageTracker) auth.ProxyUsageRecorder {
-	if usageTracker == nil {
-		return nil
-	}
-	return func(r *http.Request, identity *auth.Identity) {
-		if identity == nil {
-			return
-		}
-		keyID := strings.TrimSpace(identity.KeyID)
-		if keyID == "" {
-			return
-		}
-		filter := configstore.GatewayKeyFilter{
-			OrgID:       strings.TrimSpace(identity.OrgID),
-			WorkspaceID: strings.TrimSpace(identity.WorkspaceID),
-		}
-		ctx := context.Background()
-		if r != nil {
-			ctx = r.Context()
-		}
-		if err := usageTracker.TouchGatewayKeyLastUsed(ctx, keyID, filter); err != nil && logger != nil {
-			logger.Warn(
-				"failed to update gateway key last_used_at",
-				"correlation_id", requestCorrelationID(r),
-				"key_id", keyID,
-				"org_id", filter.OrgID,
-				"workspace_id", filter.WorkspaceID,
-				"error", err,
-			)
-		}
-	}
 }
 
 func shutdownTraceWriter(logger *slog.Logger, writer asyncTraceWriter, timeout time.Duration) {
@@ -1193,40 +730,6 @@ func shutdownTraceRetentionCleanupScheduler(logger *slog.Logger, scheduler trace
 	}
 }
 
-func attachTraceWriterMetrics(writer asyncTraceWriter, otelRuntime *observability.Runtime, enricher *llmResponseContentEnricher) {
-	if writer == nil {
-		return
-	}
-
-	otelEnabled := otelRuntime != nil && otelRuntime.Enabled()
-	if otelEnabled {
-		if qlp, ok := writer.(traceWriterQueueLenProvider); ok {
-			otelRuntime.RegisterTraceQueueDepthGauge(qlp.QueueLen)
-		}
-		if qcp, ok := writer.(traceWriterQueueCapProvider); ok {
-			otelRuntime.RegisterTraceQueueCapacityGauge(qcp.QueueCap)
-		}
-	}
-
-	ms, ok := writer.(traceWriterMetricsSetter)
-	if !ok {
-		return
-	}
-	metrics := &trace.WriterMetrics{}
-	if otelEnabled {
-		metrics.OnEnqueue = otelRuntime.RecordTraceEnqueued
-		metrics.OnFlush = otelRuntime.RecordTraceFlush
-		metrics.OnWriteStart = otelRuntime.MakeWriteSpanHook()
-		metrics.OnWriteSuccess = otelRuntime.RecordTraceWritten
-		// OnDrop left nil: the captureSink already calls RecordTraceQueueDrop
-		// with richer route/status attributes.
-	}
-	if enricher != nil {
-		metrics.OnWriteSuccessIDs = enricher.EnqueueTraceIDs
-	}
-	ms.SetMetrics(metrics)
-}
-
 func attachTraceWriterFailureLogging(logger *slog.Logger, writer asyncTraceWriter, onFailure func(trace.WriteFailure)) {
 	if logger == nil || writer == nil {
 		return
@@ -1255,21 +758,6 @@ func attachTraceWriterFailureLogging(logger *slog.Logger, writer asyncTraceWrite
 	})
 }
 
-func shutdownOpenTelemetry(logger *slog.Logger, runtime *observability.Runtime, timeout time.Duration) {
-	if runtime == nil || !runtime.Enabled() {
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	if err := runtime.Shutdown(ctx); err != nil {
-		if logger != nil {
-			logger.Error("failed to shutdown opentelemetry providers", "error", err, "timeout", timeout.String())
-		}
-	}
-}
-
 func configuredProviderSummaries(cfg config.Config) []string {
 	names := sortedProviderNames(cfg.Providers)
 	out := make([]string, 0, len(names))
@@ -1293,18 +781,6 @@ func proxyRoutesFromConfig(cfg config.Config) []proxy.Route {
 		routes = append(routes, proxy.Route{
 			Prefix:   provider.Prefix,
 			Upstream: provider.Upstream,
-		})
-	}
-	return routes
-}
-
-func authProviderRoutesFromConfig(cfg config.Config) []auth.ProviderRoute {
-	names := sortedProviderNames(cfg.Providers)
-	routes := make([]auth.ProviderRoute, 0, len(names))
-	for _, name := range names {
-		routes = append(routes, auth.ProviderRoute{
-			Name:   name,
-			Prefix: cfg.Providers[name].Prefix,
 		})
 	}
 	return routes

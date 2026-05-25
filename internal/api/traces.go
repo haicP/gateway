@@ -551,6 +551,31 @@ func loadScopedTrace(w http.ResponseWriter, r *http.Request, store trace.TraceSt
 	return item, true
 }
 
+func applyTraceTenantScope(r *http.Request, filter *trace.TraceFilter) {
+	if filter == nil {
+		return
+	}
+	query := r.URL.Query()
+	filter.OrgID = strings.TrimSpace(query.Get("org_id"))
+	filter.WorkspaceID = strings.TrimSpace(query.Get("workspace_id"))
+}
+
+func traceVisibleInTenantScope(r *http.Request, item *trace.Trace) bool {
+	if item == nil {
+		return false
+	}
+	query := r.URL.Query()
+	orgID := strings.TrimSpace(query.Get("org_id"))
+	workspaceID := strings.TrimSpace(query.Get("workspace_id"))
+	if orgID != "" && item.OrgID != orgID {
+		return false
+	}
+	if workspaceID != "" && item.WorkspaceID != workspaceID {
+		return false
+	}
+	return true
+}
+
 func handleTraceReplay(w http.ResponseWriter, r *http.Request, store trace.TraceStore, sourceTraceID string) {
 	source, ok := loadScopedTrace(w, r, store, sourceTraceID)
 	if !ok {

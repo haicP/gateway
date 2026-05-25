@@ -7,22 +7,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ongoingai/gateway/internal/configstore"
 	"github.com/ongoingai/gateway/internal/trace"
 )
 
 type RouterOptions struct {
-	AppVersion              string
-	Store                   trace.TraceStore
-	StorageDriver           string
-	StoragePath             string
-	TracePipelineReader     trace.TracePipelineDiagnosticsReader
-	GatewayKeyStore         configstore.GatewayKeyStore
-	GatewayAuthHeader       string
-	GatewayKeyAuditRecorder GatewayKeyAuditRecorder
+	AppVersion    string
+	Store         trace.TraceStore
+	StorageDriver string
+	StoragePath   string
 }
 
-func NewRouter(options RouterOptions) http.Handler {
+// NewCoreRouter exposes only the lightweight gateway management surface:
+// liveness and recorded request details.
+func NewCoreRouter(options RouterOptions) http.Handler {
 	startedAt := time.Now().UTC()
 	mux := http.NewServeMux()
 
@@ -33,21 +30,8 @@ func NewRouter(options RouterOptions) http.Handler {
 		StoragePath:   options.StoragePath,
 		Store:         options.Store,
 	}))
-	mux.Handle("/api/diagnostics/trace-pipeline", TracePipelineDiagnosticsHandler(TracePipelineDiagnosticsOptions{
-		Reader:      options.TracePipelineReader,
-		StoreDriver: options.StorageDriver,
-	}))
 	mux.Handle("/api/traces", TracesHandler(options.Store))
 	mux.Handle("/api/traces/", TraceDetailHandler(options.Store))
-	mux.Handle("/api/analytics/usage", UsageHandler(options.Store))
-	mux.Handle("/api/analytics/cost", CostHandler(options.Store))
-	mux.Handle("/api/analytics/models", ModelsHandler(options.Store))
-	mux.Handle("/api/analytics/keys", KeysHandler(options.Store))
-	mux.Handle("/api/analytics/latency", LatencyHandler(options.Store))
-	mux.Handle("/api/analytics/errors", ErrorsHandler(options.Store))
-	mux.Handle("/api/analytics/summary", SummaryHandler(options.Store))
-	mux.Handle("/api/gateway-keys", GatewayKeysHandler(options.GatewayKeyStore, options.GatewayKeyAuditRecorder))
-	mux.Handle("/api/gateway-keys/", GatewayKeyDetailHandler(options.GatewayKeyStore, options.GatewayKeyAuditRecorder))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -60,7 +44,11 @@ func NewRouter(options RouterOptions) http.Handler {
 		})
 	})
 
-	return withCORS(mux, options.GatewayAuthHeader)
+	return withCORS(mux)
+}
+
+func NewRouter(options RouterOptions) http.Handler {
+	return NewCoreRouter(options)
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
@@ -92,21 +80,8 @@ func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
 	return false
 }
 
-func withCORS(next http.Handler, gatewayAuthHeader string) http.Handler {
+func withCORS(next http.Handler) http.Handler {
 	allowedHeaders := []string{"Content-Type", "Authorization", "X-API-Key", "X-OngoingAI-Gateway-Key"}
-	customHeader := strings.TrimSpace(gatewayAuthHeader)
-	if customHeader != "" {
-		alreadyAllowed := false
-		for _, header := range allowedHeaders {
-			if strings.EqualFold(header, customHeader) {
-				alreadyAllowed = true
-				break
-			}
-		}
-		if !alreadyAllowed {
-			allowedHeaders = append(allowedHeaders, customHeader)
-		}
-	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")

@@ -1,6 +1,6 @@
 ---
 title: Reference
-description: Look up config keys, environment variables, CLI commands, CLI JSON contracts, API routes, and authorization rules for OngoingAI Gateway.
+description: Look up config keys, environment variables, CLI commands, and API routes for OngoingAI Gateway.
 related:
   title: Next steps
   description: Continue with configuration hardening and operational troubleshooting.
@@ -10,8 +10,7 @@ related:
     - gateway/help/troubleshooting
 ---
 
-Use this section when you need exact names, fields, flags, routes, and
-permission terms.
+Use this section when you need exact names, fields, flags, and routes.
 You can use these pages as canonical lookup material while operating or
 integrating the gateway.
 
@@ -20,7 +19,7 @@ integrating the gateway.
 - You need exact config keys, defaults, and validation constraints.
 - You need CLI command syntax for scripts and runbooks.
 - You need API route parameters and response fields for integration code.
-- You need permission requirements for gateway auth decisions.
+- You need to integrate with the lightweight proxy and trace APIs.
 
 ## Read in this order
 
@@ -30,24 +29,27 @@ integrating the gateway.
    env override names and parse behavior.
 3. [CLI reference](/gateway/reference/cli-reference) for command usage, flags,
    and exit behavior.
-4. [CLI JSON contracts](/gateway/reference/cli-json-contracts) for stable
-   scripting schemas for `report` and `debug`.
-5. [REST API reference](/gateway/reference/rest-api-reference) for endpoint
+4. [REST API reference](/gateway/reference/rest-api-reference) for endpoint
    contracts and request and response shapes.
-6. [Authorization reference](/gateway/reference/authorization-reference) for
-   roles, permissions, and route-to-permission mapping.
+5. [CLI JSON contracts](/gateway/reference/cli-json-contracts) for current
+   machine-readable CLI contract status.
+6. [Authorization reference](/gateway/reference/authorization-reference) for the
+   lightweight runtime authorization boundary.
+7. [接口说明](/gateway/reference/interface-guide) for a Chinese overview of all
+   public HTTP interfaces and example usage.
 
 ## What this section covers
 
 - Configuration schema and operational defaults.
 - Environment variable override behavior.
 - CLI command contracts.
-- CLI JSON scripting contracts.
-- API contracts for health, traces, analytics, and gateway key management.
-- Authorization policy vocabulary and enforcement mapping.
+- CLI JSON contract status.
+- Authorization boundary for the lightweight runtime.
+- API contracts for health, provider proxy, and trace request records.
+- A Chinese interface guide for the lightweight gateway surface.
 
 If a detail is missing, verify behavior in `openapi/openapi.yaml`,
-`cmd/ongoingai/main.go`, `internal/api/`, and `internal/auth/auth.go`.
+`cmd/ongoingai/main.go`, `internal/api/`, and `internal/proxy/`.
 
 ## Next steps
 

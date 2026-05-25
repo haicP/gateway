@@ -7,27 +7,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/ongoingai/gateway/internal/config"
-	"github.com/ongoingai/gateway/internal/observability"
 	"github.com/ongoingai/gateway/internal/pathutil"
 	"github.com/ongoingai/gateway/internal/providers"
 	"github.com/ongoingai/gateway/internal/proxy"
 	"github.com/ongoingai/gateway/internal/trace"
-)
-
-var (
-	emailPIIPattern = regexp.MustCompile(`(?i)\b[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}\b`)
-	phonePIIPattern = regexp.MustCompile(`\b(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}\b`)
-	ssnPIIPattern   = regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`)
-	// Token-like PII pattern composed from shared credential regexes in
-	// internal/observability/sanitize.go to prevent pattern drift.
-	tokenPIIPattern = regexp.MustCompile(observability.TokenPrefixPattern.String() + `|` + observability.JWTPattern.String())
 )
 
 const (
@@ -39,11 +27,6 @@ const (
 	metadataParseMaxSize          = 1 << 20
 )
 
-type redactionSummary struct {
-	applied bool
-	counts  map[string]int
-}
-
 type lineageContext struct {
 	groupID            string
 	threadID           string
@@ -51,32 +34,6 @@ type lineageContext struct {
 	parentCheckpointID string
 	checkpointSeq      int
 	checkpointSeqSet   bool
-}
-
-func newRedactionSummary() redactionSummary {
-	return redactionSummary{
-		counts: make(map[string]int),
-	}
-}
-
-func (summary *redactionSummary) add(kind string, count int) {
-	if summary == nil || count <= 0 {
-		return
-	}
-	summary.applied = true
-	summary.counts[kind] += count
-}
-
-func (summary *redactionSummary) merge(other redactionSummary) {
-	if summary == nil {
-		return
-	}
-	if other.applied {
-		summary.applied = true
-	}
-	for kind, count := range other.counts {
-		summary.counts[kind] += count
-	}
 }
 
 func buildTraceRecord(cfg config.Config, registry *providers.Registry, exchange *proxy.CapturedExchange) *trace.Trace {
@@ -92,20 +49,9 @@ func buildTraceRecord(cfg config.Config, registry *providers.Registry, exchange 
 	provider := detectProvider(cfg, exchange.Path)
 	model := extractModel(exchange.RequestBody, exchange.ResponseBody, exchange.Streaming)
 	inputTokens, outputTokens, totalTokens := extractUsage(exchange.ResponseBody, exchange.Streaming)
-	workspaceID := nonEmpty(exchange.GatewayWorkspaceID, "default")
-	orgID := nonEmpty(exchange.GatewayOrgID, "default")
 	lineage := extractLineageContext(exchange.RequestHeaders)
-	piiPolicy := cfg.ResolvePIIPolicy(config.PIIScopeInput{
-		OrgID:       orgID,
-		WorkspaceID: workspaceID,
-		KeyID:       exchange.GatewayKeyID,
-		Provider:    provider,
-		Route:       exchange.Path,
-	})
-	piiMode := piiPolicy.Mode
-
-	requestHeaders, requestHeaderRedactions := redactHeaders(exchange.RequestHeaders, piiPolicy, piiPolicy.Stages.RequestHeaders)
-	responseHeaders, responseHeaderRedactions := redactHeaders(exchange.ResponseHeaders, piiPolicy, piiPolicy.Stages.ResponseHeaders)
+	requestHeaders := redactSensitiveHeaders(exchange.RequestHeaders)
+	responseHeaders := redactSensitiveHeaders(exchange.ResponseHeaders)
 	apiKey := extractAPIKey(exchange.RequestHeaders)
 	apiKeyHash := ""
 	last4 := ""
@@ -114,60 +60,12 @@ func buildTraceRecord(cfg config.Config, registry *providers.Registry, exchange 
 		last4 = tail(apiKey, 4)
 	}
 
-	policyID := strings.TrimSpace(piiPolicy.PolicyID)
-	if policyID == "" {
-		policyID = "default/v1"
-	}
-	summary := newRedactionSummary()
-	summary.merge(requestHeaderRedactions)
-	summary.merge(responseHeaderRedactions)
-
 	requestBody := ""
 	responseBody := ""
-	redactionDroppedBodies := false
-	redactionTruncated := false
-	storageRedactionSkipped := false
 	if cfg.Tracing.CaptureBodies {
-		largeBodySpool := exchange.RequestBodyPath != "" || exchange.ResponseBodyPath != ""
-		if !largeBodySpool {
+		if exchange.RequestBodyPath == "" && exchange.ResponseBodyPath == "" {
 			requestBody = string(exchange.RequestBody)
 			responseBody = string(exchange.ResponseBody)
-		}
-
-		if largeBodySpool && piiMode != config.PIIModeOff {
-			storageRedactionSkipped = true
-			if exchange.RequestBodyTruncated || exchange.ResponseBodyTruncated {
-				redactionTruncated = true
-			}
-		} else if piiMode != config.PIIModeOff {
-			var err error
-
-			if piiPolicy.Stages.RequestBody {
-				requestBody, err = redactBodyForStorage(exchange.RequestBody, piiPolicy, workspaceID, &summary)
-				if err != nil {
-					redactionDroppedBodies = true
-				}
-				if exchange.RequestBodyTruncated {
-					redactionTruncated = true
-				}
-			}
-
-			if !redactionDroppedBodies && piiPolicy.Stages.ResponseBody {
-				responseBody, err = redactBodyForStorage(exchange.ResponseBody, piiPolicy, workspaceID, &summary)
-				if err != nil {
-					redactionDroppedBodies = true
-				}
-				if exchange.ResponseBodyTruncated {
-					redactionTruncated = true
-				}
-			}
-
-			if redactionDroppedBodies {
-				// In storage redaction mode, never persist raw captured bodies if
-				// redaction fails for either side.
-				requestBody = ""
-				responseBody = ""
-			}
 		}
 	}
 
@@ -181,9 +79,6 @@ func buildTraceRecord(cfg config.Config, registry *providers.Registry, exchange 
 	metadata := map[string]any{
 		"streaming":             exchange.Streaming,
 		"stream_chunks":         exchange.StreamChunks,
-		"redaction_mode":        piiMode,
-		"redaction_policy_id":   policyID,
-		"redaction_applied":     summary.applied,
 		"lineage_checkpoint_id": traceID,
 		"lineage_immutable":     true,
 	}
@@ -229,38 +124,8 @@ func buildTraceRecord(cfg config.Config, registry *providers.Registry, exchange 
 	if lineage.checkpointSeqSet {
 		metadata["lineage_checkpoint_seq"] = lineage.checkpointSeq
 	}
-	if len(summary.counts) > 0 {
-		metadata["redaction_counts"] = summary.counts
-	}
-	if redactionTruncated {
-		metadata["redaction_truncated"] = true
-	}
-	if redactionDroppedBodies {
-		metadata["redaction_storage_drop"] = true
-		metadata["redaction_failure_semantics"] = "storage_drop_continue_proxy"
-	}
-	if storageRedactionSkipped {
-		metadata["body_pii_status"] = "skipped_large_body"
-		metadata["redaction_storage_skipped"] = true
-		metadata["redaction_skip_reason"] = "spooled_body"
-	}
 	if last4 != "" {
 		metadata["api_key_last4"] = last4
-	}
-	if exchange.GatewayKeyID != "" {
-		metadata["gateway_key_id"] = exchange.GatewayKeyID
-	}
-	if exchange.GatewayTeam != "" {
-		metadata["team"] = exchange.GatewayTeam
-	}
-	if exchange.GatewayRole != "" {
-		metadata["role"] = exchange.GatewayRole
-	}
-	if exchange.GatewayOrgID != "" {
-		metadata["org_id"] = exchange.GatewayOrgID
-	}
-	if exchange.GatewayWorkspaceID != "" {
-		metadata["workspace_id"] = exchange.GatewayWorkspaceID
 	}
 	if correlationID := strings.TrimSpace(exchange.CorrelationID); correlationID != "" {
 		metadata["correlation_id"] = correlationID
@@ -273,9 +138,8 @@ func buildTraceRecord(cfg config.Config, registry *providers.Registry, exchange 
 		ID:                    traceID,
 		TraceGroupID:          lineage.groupID,
 		Timestamp:             traceTimestamp,
-		OrgID:                 nonEmpty(exchange.GatewayOrgID, "default"),
-		WorkspaceID:           nonEmpty(exchange.GatewayWorkspaceID, "default"),
-		GatewayKeyID:          exchange.GatewayKeyID,
+		OrgID:                 "default",
+		WorkspaceID:           "default",
 		Provider:              provider,
 		Model:                 nonEmpty(model, "unknown"),
 		RequestMethod:         nonEmpty(exchange.Method, "UNKNOWN"),
@@ -594,217 +458,6 @@ func firstInt(values map[string]any, keys ...string) int {
 	return 0
 }
 
-func redactHeaders(headers http.Header, piiCfg config.PIIConfig, includeCustomDenylist bool) (http.Header, redactionSummary) {
-	summary := newRedactionSummary()
-	cloned := make(http.Header, len(headers))
-	denylist := headerDenylist(piiCfg, includeCustomDenylist)
-
-	for key, values := range headers {
-		copied := make([]string, len(values))
-		copy(copied, values)
-
-		if _, ok := denylist[strings.ToLower(strings.TrimSpace(key))]; ok {
-			copied = []string{"[REDACTED]"}
-			if len(values) == 0 {
-				summary.add("header", 1)
-			} else {
-				summary.add("header", len(values))
-			}
-		}
-
-		cloned[key] = copied
-	}
-	return cloned, summary
-}
-
-func redactBodyForStorage(body []byte, piiCfg config.PIIConfig, workspaceID string, summary *redactionSummary) (string, error) {
-	if len(body) == 0 {
-		return "", nil
-	}
-
-	var payload any
-	if err := json.Unmarshal(body, &payload); err == nil {
-		denylist := normalizedDenylist(piiCfg.Body.KeyDenylist)
-		redacted := redactJSONValue(payload, piiCfg, workspaceID, summary, denylist)
-		marshaled, marshalErr := json.Marshal(redacted)
-		if marshalErr != nil {
-			return "", fmt.Errorf("marshal redacted body: %w", marshalErr)
-		}
-		return string(marshaled), nil
-	}
-	if !utf8.Valid(body) {
-		return "", fmt.Errorf("non-json body is not valid utf-8")
-	}
-
-	return redactStringPII(string(body), piiCfg, workspaceID, summary), nil
-}
-
-func redactJSONValue(
-	value any,
-	piiCfg config.PIIConfig,
-	workspaceID string,
-	summary *redactionSummary,
-	fieldDenylist []string,
-) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(typed))
-		for key, raw := range typed {
-			if shouldRedactFieldName(key, fieldDenylist) {
-				out[key] = redactionPlaceholder(
-					"FIELD",
-					stringifyForHash(raw),
-					workspaceID,
-					piiCfg.Replacement,
-				)
-				if summary != nil {
-					summary.add("field_name", 1)
-				}
-				continue
-			}
-			out[key] = redactJSONValue(raw, piiCfg, workspaceID, summary, fieldDenylist)
-		}
-		return out
-	case []any:
-		for i := range typed {
-			typed[i] = redactJSONValue(typed[i], piiCfg, workspaceID, summary, fieldDenylist)
-		}
-		return typed
-	case string:
-		return redactStringPII(typed, piiCfg, workspaceID, summary)
-	default:
-		return value
-	}
-}
-
-func redactStringPII(value string, piiCfg config.PIIConfig, workspaceID string, summary *redactionSummary) string {
-	redacted := value
-	if piiCfg.Detectors.Email {
-		redacted = replacePatternMatches(redacted, emailPIIPattern, "EMAIL", "email", piiCfg, workspaceID, summary)
-	}
-	if piiCfg.Detectors.Phone {
-		redacted = replacePatternMatches(redacted, phonePIIPattern, "PHONE", "phone", piiCfg, workspaceID, summary)
-	}
-	if piiCfg.Detectors.SSN {
-		redacted = replacePatternMatches(redacted, ssnPIIPattern, "SSN", "ssn", piiCfg, workspaceID, summary)
-	}
-	if piiCfg.Detectors.TokenLike {
-		redacted = replacePatternMatches(redacted, tokenPIIPattern, "TOKEN", "token_like", piiCfg, workspaceID, summary)
-	}
-	return redacted
-}
-
-func replacePatternMatches(
-	input string,
-	pattern *regexp.Regexp,
-	placeholderType string,
-	detectorKey string,
-	piiCfg config.PIIConfig,
-	workspaceID string,
-	summary *redactionSummary,
-) string {
-	if pattern == nil || input == "" {
-		return input
-	}
-
-	matchCount := 0
-	redacted := pattern.ReplaceAllStringFunc(input, func(match string) string {
-		matchCount++
-		return redactionPlaceholder(placeholderType, match, workspaceID, piiCfg.Replacement)
-	})
-	if summary != nil && matchCount > 0 {
-		summary.add(detectorKey, matchCount)
-	}
-	return redacted
-}
-
-func headerDenylist(piiCfg config.PIIConfig, includeCustom bool) map[string]struct{} {
-	denylist := map[string]struct{}{
-		"authorization":           {},
-		"cookie":                  {},
-		"set-cookie":              {},
-		"x-api-key":               {},
-		"x-ongoingai-gateway-key": {},
-	}
-	if includeCustom {
-		for _, key := range piiCfg.Headers.Denylist {
-			normalized := strings.ToLower(strings.TrimSpace(key))
-			if normalized == "" {
-				continue
-			}
-			denylist[normalized] = struct{}{}
-		}
-	}
-	return denylist
-}
-
-func normalizedDenylist(values []string) []string {
-	normalized := make([]string, 0, len(values))
-	for _, value := range values {
-		item := normalizePIIFieldName(value)
-		if item == "" {
-			continue
-		}
-		normalized = append(normalized, item)
-	}
-	return normalized
-}
-
-func shouldRedactFieldName(key string, denylist []string) bool {
-	if len(denylist) == 0 {
-		return false
-	}
-	normalized := normalizePIIFieldName(key)
-	for _, item := range denylist {
-		if normalized == item || strings.Contains(normalized, item) {
-			return true
-		}
-	}
-	return false
-}
-
-func normalizePIIFieldName(value string) string {
-	replacer := strings.NewReplacer("-", "", "_", "", " ", "")
-	return strings.ToLower(strings.TrimSpace(replacer.Replace(value)))
-}
-
-func redactionPlaceholder(
-	placeholderType string,
-	rawValue string,
-	workspaceID string,
-	replacement config.PIIReplacementConfig,
-) string {
-	format := strings.TrimSpace(replacement.Format)
-	if format == "" {
-		format = "[{type}_REDACTED:{hash}]"
-	}
-
-	hash := hashPIIValue(rawValue, workspaceID, replacement.HashSalt)
-	value := strings.ReplaceAll(format, "{type}", strings.ToUpper(strings.TrimSpace(placeholderType)))
-	value = strings.ReplaceAll(value, "{hash}", hash)
-	return value
-}
-
-func hashPIIValue(value, workspaceID, hashSalt string) string {
-	sum := sha256.Sum256([]byte(workspaceID + ":" + hashSalt + ":" + value))
-	return hex.EncodeToString(sum[:8])
-}
-
-func stringifyForHash(value any) string {
-	switch typed := value.(type) {
-	case string:
-		return typed
-	case nil:
-		return ""
-	default:
-		data, err := json.Marshal(typed)
-		if err != nil {
-			return fmt.Sprint(typed)
-		}
-		return string(data)
-	}
-}
-
 func headersToJSON(headers http.Header) string {
 	if headers == nil {
 		return "{}"
@@ -814,6 +467,16 @@ func headersToJSON(headers http.Header) string {
 		return "{}"
 	}
 	return string(data)
+}
+
+func redactSensitiveHeaders(headers http.Header) http.Header {
+	redacted := headers.Clone()
+	for _, name := range []string{"authorization", "cookie", "set-cookie", "x-api-key", "x-ongoingai-gateway-key"} {
+		if _, ok := redacted[http.CanonicalHeaderKey(name)]; ok {
+			redacted.Set(name, "[REDACTED]")
+		}
+	}
+	return redacted
 }
 
 func extractAPIKey(headers http.Header) string {

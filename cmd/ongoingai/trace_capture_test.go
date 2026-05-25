@@ -293,7 +293,7 @@ func TestExtractModelFromSSESupportsAnthropicMessageEnvelope(t *testing.T) {
 	}
 }
 
-func TestBuildTraceRecordIncludesGatewayIdentityMetadata(t *testing.T) {
+func TestBuildTraceRecordUsesDefaultIdentityInLightweightMode(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.Default()
@@ -312,30 +312,20 @@ func TestBuildTraceRecordIncludesGatewayIdentityMetadata(t *testing.T) {
 	}
 
 	record := buildTraceRecord(cfg, providers.DefaultRegistry(), exchange)
-	if record.OrgID != "org-a" {
-		t.Fatalf("org_id=%q, want org-a", record.OrgID)
+	if record.OrgID != "default" {
+		t.Fatalf("org_id=%q, want default", record.OrgID)
 	}
-	if record.WorkspaceID != "workspace-a" {
-		t.Fatalf("workspace_id=%q, want workspace-a", record.WorkspaceID)
+	if record.WorkspaceID != "default" {
+		t.Fatalf("workspace_id=%q, want default", record.WorkspaceID)
 	}
 	var metadata map[string]any
 	if err := json.Unmarshal([]byte(record.Metadata), &metadata); err != nil {
 		t.Fatalf("unmarshal metadata: %v", err)
 	}
-	if metadata["gateway_key_id"] != "team-a-dev-1" {
-		t.Fatalf("gateway_key_id=%v, want team-a-dev-1", metadata["gateway_key_id"])
-	}
-	if metadata["team"] != "team-a" {
-		t.Fatalf("team=%v, want team-a", metadata["team"])
-	}
-	if metadata["role"] != "developer" {
-		t.Fatalf("role=%v, want developer", metadata["role"])
-	}
-	if metadata["org_id"] != "org-a" {
-		t.Fatalf("org_id=%v, want org-a", metadata["org_id"])
-	}
-	if metadata["workspace_id"] != "workspace-a" {
-		t.Fatalf("workspace_id=%v, want workspace-a", metadata["workspace_id"])
+	for _, key := range []string{"gateway_key_id", "team", "role", "org_id", "workspace_id"} {
+		if _, ok := metadata[key]; ok {
+			t.Fatalf("metadata[%q]=%v, want omitted in lightweight mode", key, metadata[key])
+		}
 	}
 }
 
@@ -497,12 +487,11 @@ func TestBuildTraceRecordRedactsSensitiveResponseHeaders(t *testing.T) {
 	}
 }
 
-func TestBuildTraceRecordPIIRedactsBodiesByDefaultWhenCaptureEnabled(t *testing.T) {
+func TestBuildTraceRecordStoresCapturedBodiesWithoutPIIRules(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.Default()
 	cfg.Tracing.CaptureBodies = true
-	cfg.PII.Mode = ""
 
 	exchange := &proxy.CapturedExchange{
 		Method:         http.MethodPost,
@@ -515,45 +504,29 @@ func TestBuildTraceRecordPIIRedactsBodiesByDefaultWhenCaptureEnabled(t *testing.
 
 	record := buildTraceRecord(cfg, providers.DefaultRegistry(), exchange)
 
-	if strings.Contains(record.RequestBody, "alice@example.com") || strings.Contains(record.RequestBody, "415-555-1212") {
-		t.Fatalf("request body still contains raw pii: %q", record.RequestBody)
+	if !strings.Contains(record.RequestBody, "alice@example.com") || !strings.Contains(record.RequestBody, "415-555-1212") {
+		t.Fatalf("request body=%q, want captured raw body", record.RequestBody)
 	}
-	if strings.Contains(record.ResponseBody, "123-45-6789") || strings.Contains(record.ResponseBody, "ghp_abcd1234efgh5678") {
-		t.Fatalf("response body still contains raw pii: %q", record.ResponseBody)
-	}
-	if !strings.Contains(record.RequestBody, "_REDACTED:") {
-		t.Fatalf("request body=%q, want redaction placeholders", record.RequestBody)
-	}
-	if !strings.Contains(record.ResponseBody, "_REDACTED:") {
-		t.Fatalf("response body=%q, want redaction placeholders", record.ResponseBody)
+	if !strings.Contains(record.ResponseBody, "123-45-6789") || !strings.Contains(record.ResponseBody, "ghp_abcd1234efgh5678") {
+		t.Fatalf("response body=%q, want captured raw body", record.ResponseBody)
 	}
 
 	var metadata map[string]any
 	if err := json.Unmarshal([]byte(record.Metadata), &metadata); err != nil {
 		t.Fatalf("unmarshal metadata: %v", err)
 	}
-	if metadata["redaction_mode"] != "redact_storage" {
-		t.Fatalf("redaction_mode=%v, want redact_storage", metadata["redaction_mode"])
-	}
-	if metadata["redaction_applied"] != true {
-		t.Fatalf("redaction_applied=%v, want true", metadata["redaction_applied"])
-	}
-
-	counts, ok := metadata["redaction_counts"].(map[string]any)
-	if !ok {
-		t.Fatalf("redaction_counts missing or invalid: %T", metadata["redaction_counts"])
-	}
-	if counts["email"] == nil && counts["field_name"] == nil {
-		t.Fatalf("expected redaction counts for body detectors, got %v", counts)
+	for _, key := range []string{"redaction_mode", "redaction_applied", "redaction_counts"} {
+		if _, ok := metadata[key]; ok {
+			t.Fatalf("metadata[%q]=%v, want omitted in lightweight mode", key, metadata[key])
+		}
 	}
 }
 
-func TestBuildTraceRecordPIIModeOffKeepsBodiesUnchanged(t *testing.T) {
+func TestBuildTraceRecordKeepsCapturedBodiesUnchanged(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.Default()
 	cfg.Tracing.CaptureBodies = true
-	cfg.PII.Mode = config.PIIModeOff
 
 	reqBody := `{"email":"alice@example.com"}`
 	respBody := `{"phone":"415-555-1212"}`
@@ -575,79 +548,50 @@ func TestBuildTraceRecordPIIModeOffKeepsBodiesUnchanged(t *testing.T) {
 	}
 }
 
-func TestBuildTraceRecordPIIScopeOverridesModeAndPolicy(t *testing.T) {
+func TestBuildTraceRecordUsesDefaultTenantScope(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.Default()
 	cfg.Tracing.CaptureBodies = true
-	cfg.PII.Mode = config.PIIModeOff
-	cfg.PII.PolicyID = "global/v1"
-	cfg.PII.Scopes = []config.PIIScopeConfig{
-		{
-			Match: config.PIIScopeMatchConfig{
-				WorkspaceID: "workspace-strict",
-				Provider:    "llm",
-				RoutePrefix: "/llm/v1/chat",
-			},
-			Mode:     config.PIIModeRedactStorage,
-			PolicyID: "workspace-strict/v1",
-		},
-	}
 
 	exchange := &proxy.CapturedExchange{
-		Method:             http.MethodPost,
-		Path:               "/llm/v1/chat/completions",
-		StatusCode:         http.StatusOK,
-		GatewayWorkspaceID: "workspace-strict",
-		RequestHeaders:     http.Header{"Content-Type": {"application/json"}},
-		RequestBody:        []byte(`{"email":"alice@example.com"}`),
-		ResponseBody:       []byte(`{"ok":true}`),
+		Method:         http.MethodPost,
+		Path:           "/llm/v1/chat/completions",
+		StatusCode:     http.StatusOK,
+		RequestHeaders: http.Header{"Content-Type": {"application/json"}},
+		RequestBody:    []byte(`{"email":"alice@example.com"}`),
+		ResponseBody:   []byte(`{"ok":true}`),
 	}
 
 	record := buildTraceRecord(cfg, providers.DefaultRegistry(), exchange)
-	if strings.Contains(record.RequestBody, "alice@example.com") {
-		t.Fatalf("request body still contains raw pii under scoped redaction: %q", record.RequestBody)
+	if record.OrgID != "default" || record.WorkspaceID != "default" {
+		t.Fatalf("tenant scope=%s/%s, want default/default", record.OrgID, record.WorkspaceID)
 	}
-	if !strings.Contains(record.RequestBody, "_REDACTED:") {
-		t.Fatalf("request body=%q, want redaction placeholder", record.RequestBody)
+	if record.RequestBody != `{"email":"alice@example.com"}` {
+		t.Fatalf("request body=%q, want raw body in lightweight mode", record.RequestBody)
 	}
 
 	var metadata map[string]any
 	if err := json.Unmarshal([]byte(record.Metadata), &metadata); err != nil {
 		t.Fatalf("unmarshal metadata: %v", err)
 	}
-	if metadata["redaction_mode"] != config.PIIModeRedactStorage {
-		t.Fatalf("redaction_mode=%v, want %q", metadata["redaction_mode"], config.PIIModeRedactStorage)
-	}
-	if metadata["redaction_policy_id"] != "workspace-strict/v1" {
-		t.Fatalf("redaction_policy_id=%v, want workspace-strict/v1", metadata["redaction_policy_id"])
+	for _, key := range []string{"redaction_mode", "redaction_policy_id"} {
+		if _, ok := metadata[key]; ok {
+			t.Fatalf("metadata[%q]=%v, want omitted in lightweight mode", key, metadata[key])
+		}
 	}
 }
 
-func TestBuildTraceRecordPIIScopeCanDisableRedactionForSpecificKey(t *testing.T) {
+func TestBuildTraceRecordAlwaysStoresRawBodiesWhenCaptureEnabled(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.Default()
 	cfg.Tracing.CaptureBodies = true
-	cfg.PII.Mode = config.PIIModeRedactStorage
-	cfg.PII.PolicyID = "global/v1"
-	cfg.PII.Scopes = []config.PIIScopeConfig{
-		{
-			Match: config.PIIScopeMatchConfig{
-				KeyID:       "key-dev",
-				Provider:    "llm",
-				RoutePrefix: "/llm/v1/chat",
-			},
-			Mode:     config.PIIModeOff,
-			PolicyID: "key-dev/off",
-		},
-	}
 
 	exchange := &proxy.CapturedExchange{
 		Method:         http.MethodPost,
 		Path:           "/llm/v1/chat/completions",
 		StatusCode:     http.StatusOK,
-		GatewayKeyID:   "key-dev",
 		RequestHeaders: http.Header{"Content-Type": {"application/json"}},
 		RequestBody:    []byte(`{"email":"alice@example.com"}`),
 		ResponseBody:   []byte(`{"ok":true}`),
@@ -662,22 +606,18 @@ func TestBuildTraceRecordPIIScopeCanDisableRedactionForSpecificKey(t *testing.T)
 	if err := json.Unmarshal([]byte(record.Metadata), &metadata); err != nil {
 		t.Fatalf("unmarshal metadata: %v", err)
 	}
-	if metadata["redaction_mode"] != config.PIIModeOff {
-		t.Fatalf("redaction_mode=%v, want %q", metadata["redaction_mode"], config.PIIModeOff)
-	}
-	if metadata["redaction_policy_id"] != "key-dev/off" {
-		t.Fatalf("redaction_policy_id=%v, want key-dev/off", metadata["redaction_policy_id"])
+	for _, key := range []string{"redaction_mode", "redaction_policy_id"} {
+		if _, ok := metadata[key]; ok {
+			t.Fatalf("metadata[%q]=%v, want omitted in lightweight mode", key, metadata[key])
+		}
 	}
 }
 
-func TestBuildTraceRecordPIIStageControlsBodyRedaction(t *testing.T) {
+func TestBuildTraceRecordCapturesRequestAndResponseBodiesTogether(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.Default()
 	cfg.Tracing.CaptureBodies = true
-	cfg.PII.Mode = config.PIIModeRedactStorage
-	cfg.PII.Stages.RequestBody = false
-	cfg.PII.Stages.ResponseBody = true
 
 	exchange := &proxy.CapturedExchange{
 		Method:         http.MethodPost,
@@ -692,17 +632,16 @@ func TestBuildTraceRecordPIIStageControlsBodyRedaction(t *testing.T) {
 	if record.RequestBody != `{"email":"alice@example.com"}` {
 		t.Fatalf("request body=%q, want unchanged", record.RequestBody)
 	}
-	if strings.Contains(record.ResponseBody, "bob@example.com") {
-		t.Fatalf("response body=%q, want redacted response body", record.ResponseBody)
+	if record.ResponseBody != `{"email":"bob@example.com"}` {
+		t.Fatalf("response body=%q, want unchanged", record.ResponseBody)
 	}
 }
 
-func TestBuildTraceRecordSetsRedactionTruncatedMetadata(t *testing.T) {
+func TestBuildTraceRecordOmitsRedactionMetadataForTruncatedBody(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.Default()
 	cfg.Tracing.CaptureBodies = true
-	cfg.PII.Mode = config.PIIModeRedactStorage
 
 	exchange := &proxy.CapturedExchange{
 		Method:               http.MethodPost,
@@ -720,17 +659,16 @@ func TestBuildTraceRecordSetsRedactionTruncatedMetadata(t *testing.T) {
 	if err := json.Unmarshal([]byte(record.Metadata), &metadata); err != nil {
 		t.Fatalf("unmarshal metadata: %v", err)
 	}
-	if metadata["redaction_truncated"] != true {
-		t.Fatalf("redaction_truncated=%v, want true", metadata["redaction_truncated"])
+	if _, ok := metadata["redaction_truncated"]; ok {
+		t.Fatalf("redaction_truncated=%v, want omitted in lightweight mode", metadata["redaction_truncated"])
 	}
 }
 
-func TestBuildTraceRecordRedactStorageDropsBodiesOnRedactionError(t *testing.T) {
+func TestBuildTraceRecordStoresInvalidUTF8BodyBytes(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.Default()
 	cfg.Tracing.CaptureBodies = true
-	cfg.PII.Mode = config.PIIModeRedactStorage
 
 	exchange := &proxy.CapturedExchange{
 		Method:         http.MethodPost,
@@ -742,22 +680,18 @@ func TestBuildTraceRecordRedactStorageDropsBodiesOnRedactionError(t *testing.T) 
 	}
 
 	record := buildTraceRecord(cfg, providers.DefaultRegistry(), exchange)
-	if record.RequestBody != "" || record.ResponseBody != "" {
-		t.Fatalf("expected storage bodies dropped on redaction error, got request=%q response=%q", record.RequestBody, record.ResponseBody)
+	if record.RequestBody == "" || record.ResponseBody != `{"ok":true}` {
+		t.Fatalf("expected raw bodies stored, got request=%q response=%q", record.RequestBody, record.ResponseBody)
 	}
 
 	var metadata map[string]any
 	if err := json.Unmarshal([]byte(record.Metadata), &metadata); err != nil {
 		t.Fatalf("unmarshal metadata: %v", err)
 	}
-	if metadata["redaction_storage_drop"] != true {
-		t.Fatalf("redaction_storage_drop=%v, want true", metadata["redaction_storage_drop"])
-	}
-	if metadata["redaction_failure_semantics"] != "storage_drop_continue_proxy" {
-		t.Fatalf(
-			"redaction_failure_semantics=%v, want storage_drop_continue_proxy",
-			metadata["redaction_failure_semantics"],
-		)
+	for _, key := range []string{"redaction_storage_drop", "redaction_failure_semantics"} {
+		if _, ok := metadata[key]; ok {
+			t.Fatalf("metadata[%q]=%v, want omitted in lightweight mode", key, metadata[key])
+		}
 	}
 }
 

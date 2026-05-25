@@ -14,7 +14,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/ongoingai/gateway/internal/auth"
 	"github.com/ongoingai/gateway/internal/correlation"
 )
 
@@ -219,21 +218,6 @@ func BodyCaptureMiddleware(options BodyCaptureOptions, sink BodyCaptureSink, nex
 			timeToFirstTokenUS = recorder.TimeToFirstWriteUS()
 			timeToFirstTokenMS = microsecondsToRoundedMilliseconds(timeToFirstTokenUS)
 		}
-		identity, _ := auth.IdentityFromContext(r.Context())
-
-		gatewayOrgID := ""
-		gatewayWorkspaceID := ""
-		gatewayKeyID := ""
-		gatewayTeam := ""
-		gatewayRole := ""
-		if identity != nil {
-			gatewayOrgID = identity.OrgID
-			gatewayWorkspaceID = identity.WorkspaceID
-			gatewayKeyID = identity.KeyID
-			gatewayTeam = identity.Team
-			gatewayRole = identity.Role
-		}
-
 		sink(&CapturedExchange{
 			Context:               r.Context(),
 			StartedAt:             start.UTC(),
@@ -257,19 +241,12 @@ func BodyCaptureMiddleware(options BodyCaptureOptions, sink BodyCaptureSink, nex
 			TimeToFirstTokenMS:    timeToFirstTokenMS,
 			TimeToFirstTokenUS:    timeToFirstTokenUS,
 			DurationMS:            time.Since(start).Milliseconds(),
-			GatewayOrgID:          gatewayOrgID,
-			GatewayWorkspaceID:    gatewayWorkspaceID,
-			GatewayKeyID:          gatewayKeyID,
-			GatewayTeam:           gatewayTeam,
-			GatewayRole:           gatewayRole,
 			CorrelationID:         correlationID,
 		})
 	})
 }
 
 func baseCapturedExchange(r *http.Request, start time.Time, correlationID string) CapturedExchange {
-	identity, _ := auth.IdentityFromContext(r.Context())
-
 	exchange := CapturedExchange{
 		Context:        r.Context(),
 		StartedAt:      start.UTC(),
@@ -280,13 +257,6 @@ func baseCapturedExchange(r *http.Request, start time.Time, correlationID string
 		Streaming:      true,
 		Transport:      "websocket",
 		CorrelationID:  correlationID,
-	}
-	if identity != nil {
-		exchange.GatewayOrgID = identity.OrgID
-		exchange.GatewayWorkspaceID = identity.WorkspaceID
-		exchange.GatewayKeyID = identity.KeyID
-		exchange.GatewayTeam = identity.Team
-		exchange.GatewayRole = identity.Role
 	}
 	return exchange
 }

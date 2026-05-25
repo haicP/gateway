@@ -103,9 +103,6 @@ providers:
 tracing:
   capture_bodies: false
   body_max_size: 1048576
-auth:
-  enabled: false
-  header: X-OngoingAI-Gateway-Key
 `, port, dbPath, upstream.URL, upstream.URL)
 	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -456,9 +453,6 @@ providers:
     prefix: /llm
 tracing:
   capture_bodies: false
-auth:
-  enabled: false
-  header: X-OngoingAI-Gateway-Key
 %s`, port, filepath.Join(tmpDir, "traces.db"), backupBlock)
 	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -493,9 +487,6 @@ tracing:
     cleanup_enabled: %s
     cleanup_daily_at: "03:30"
     cleanup_timezone: UTC
-auth:
-  enabled: false
-  header: X-OngoingAI-Gateway-Key
 `, port, filepath.Join(tmpDir, "traces.db"), cleanupEnabled)
 	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)

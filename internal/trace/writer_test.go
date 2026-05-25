@@ -51,36 +51,8 @@ func (s *testStore) QueryTraces(_ context.Context, _ TraceFilter) (*TraceResult,
 	return nil, ErrNotImplemented
 }
 
-func (s *testStore) GetUsageSummary(_ context.Context, _ AnalyticsFilter) (*UsageSummary, error) {
-	return nil, ErrNotImplemented
-}
-
-func (s *testStore) GetUsageSeries(_ context.Context, _ AnalyticsFilter, _, _ string) ([]UsagePoint, error) {
-	return nil, ErrNotImplemented
-}
-
-func (s *testStore) GetCostSummary(_ context.Context, _ AnalyticsFilter) (*CostSummary, error) {
-	return nil, ErrNotImplemented
-}
-
-func (s *testStore) GetCostSeries(_ context.Context, _ AnalyticsFilter, _, _ string) ([]CostPoint, error) {
-	return nil, ErrNotImplemented
-}
-
-func (s *testStore) GetModelStats(_ context.Context, _ AnalyticsFilter) ([]ModelStats, error) {
-	return nil, ErrNotImplemented
-}
-
-func (s *testStore) GetKeyStats(_ context.Context, _ AnalyticsFilter) ([]KeyStats, error) {
-	return nil, ErrNotImplemented
-}
-
-func (s *testStore) GetLatencyPercentiles(_ context.Context, _ AnalyticsFilter, _ string) ([]LatencyStats, error) {
-	return nil, ErrNotImplemented
-}
-
-func (s *testStore) GetErrorRateBreakdown(_ context.Context, _ AnalyticsFilter, _ string) ([]ErrorRateStats, error) {
-	return nil, ErrNotImplemented
+func (s *testStore) CountTraces(_ context.Context) (int64, error) {
+	return int64(s.Count()), nil
 }
 
 func (s *testStore) Count() int {
