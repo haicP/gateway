@@ -95,8 +95,8 @@ func TestNewGatewayServerUsesSafeTimeouts(t *testing.T) {
 	if server.ReadHeaderTimeout != serverReadHeaderTimeout {
 		t.Fatalf("ReadHeaderTimeout=%s, want %s", server.ReadHeaderTimeout, serverReadHeaderTimeout)
 	}
-	if server.ReadTimeout != serverReadTimeout {
-		t.Fatalf("ReadTimeout=%s, want %s", server.ReadTimeout, serverReadTimeout)
+	if server.ReadTimeout != 0 {
+		t.Fatalf("ReadTimeout=%s, want disabled for websocket/streaming requests", server.ReadTimeout)
 	}
 	if server.IdleTimeout != serverIdleTimeout {
 		t.Fatalf("IdleTimeout=%s, want %s", server.IdleTimeout, serverIdleTimeout)

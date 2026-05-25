@@ -36,7 +36,6 @@ const traceWriterShutdownTimeout = 5 * time.Second
 const requestDetailsBackupSchedulerShutdownTimeout = 5 * time.Second
 const traceRetentionCleanupSchedulerShutdownTimeout = 5 * time.Second
 const serverReadHeaderTimeout = 10 * time.Second
-const serverReadTimeout = 30 * time.Second
 const serverIdleTimeout = 2 * time.Minute
 
 type asyncTraceWriter interface {
@@ -428,7 +427,6 @@ func newGatewayServer(cfg config.Config, logger *slog.Logger, handler http.Handl
 		Addr:              cfg.Server.Address(),
 		Handler:           proxy.LoggingMiddlewareWithOptions(logger, handler, proxy.LoggingOptions{WriteCorrelationHeader: shouldWriteCorrelationHeader(cfg)}),
 		ReadHeaderTimeout: serverReadHeaderTimeout,
-		ReadTimeout:       serverReadTimeout,
 		IdleTimeout:       serverIdleTimeout,
 	}
 }
