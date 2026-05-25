@@ -36,7 +36,7 @@ COPY --chown=65532:65532 ongoingai.example.yaml /app/ongoingai.yaml
 
 USER 65532:65532
 
-EXPOSE 8080
+EXPOSE 8070
 
 ENTRYPOINT ["/ongoingai"]
 CMD ["serve", "--config", "/app/ongoingai.yaml"]
