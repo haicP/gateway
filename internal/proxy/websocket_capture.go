@@ -153,10 +153,10 @@ func (c *websocketObservedConn) Read(p []byte) (int, error) {
 }
 
 func (c *websocketObservedConn) Write(p []byte) (int, error) {
-	n, err := c.Conn.Write(p)
-	if n > 0 && c.recorder != nil {
-		c.recorder.ObserveServerBytes(p[:n])
+	if len(p) > 0 && c.recorder != nil {
+		c.recorder.ObserveServerBytes(p)
 	}
+	n, err := c.Conn.Write(p)
 	return n, err
 }
 
