@@ -71,34 +71,43 @@ type BodyCaptureOptions struct {
 type CapturedExchange struct {
 	// Context carries the request context so downstream consumers (e.g. trace
 	// enqueue) can create child spans of the HTTP request span.
-	Context               context.Context
-	StartedAt             time.Time
-	Method                string
-	Path                  string
-	StatusCode            int
-	RequestHeaders        http.Header
-	RequestBody           []byte
-	RequestBodyTruncated  bool
-	RequestBodyPath       string
-	RequestBodyBytes      int64
-	RequestBodySHA256     string
-	ResponseHeaders       http.Header
-	ResponseBody          []byte
-	ResponseBodyTruncated bool
-	ResponseBodyPath      string
-	ResponseBodyBytes     int64
-	ResponseBodySHA256    string
-	Streaming             bool
-	StreamChunks          int
-	TimeToFirstTokenMS    int64
-	TimeToFirstTokenUS    int64
-	DurationMS            int64
-	GatewayOrgID          string
-	GatewayWorkspaceID    string
-	GatewayKeyID          string
-	GatewayTeam           string
-	GatewayRole           string
-	CorrelationID         string
+	Context                   context.Context
+	StartedAt                 time.Time
+	Method                    string
+	Path                      string
+	StatusCode                int
+	RequestHeaders            http.Header
+	RequestBody               []byte
+	RequestBodyTruncated      bool
+	RequestBodyPath           string
+	RequestBodyBytes          int64
+	RequestBodySHA256         string
+	ResponseHeaders           http.Header
+	ResponseBody              []byte
+	ResponseBodyTruncated     bool
+	ResponseBodyPath          string
+	ResponseBodyBytes         int64
+	ResponseBodySHA256        string
+	Streaming                 bool
+	StreamChunks              int
+	TimeToFirstTokenMS        int64
+	TimeToFirstTokenUS        int64
+	DurationMS                int64
+	Transport                 string
+	WebSocketConnectionID     string
+	WebSocketTurnIndex        int
+	WebSocketTurnStartType    string
+	WebSocketTurnTerminalType string
+	WebSocketRequestMessages  int
+	WebSocketResponseMessages int
+	WebSocketTurnIncomplete   bool
+	WebSocketCloseCode        int
+	GatewayOrgID              string
+	GatewayWorkspaceID        string
+	GatewayKeyID              string
+	GatewayTeam               string
+	GatewayRole               string
+	CorrelationID             string
 }
 
 func (e *CapturedExchange) CleanupBodyFiles() {
@@ -155,6 +164,18 @@ func BodyCaptureMiddleware(options BodyCaptureOptions, sink BodyCaptureSink, nex
 		}
 
 		recorder := newCaptureResponseWriter(w, options.MaxBodySize, options.ParseMaxSize, captureBodies, options.Enabled, start)
+		if captureBodies && IsWebSocketUpgrade(r) {
+			wsMaxBodySize := options.MaxBodySize
+			if !options.Enabled && wsMaxBodySize <= 0 {
+				wsMaxBodySize = options.ParseMaxSize
+			}
+			recorder.EnableWebSocketCapture(webSocketCaptureConfig{
+				maxBodySize:     wsMaxBodySize,
+				sink:            sink,
+				base:            baseCapturedExchange(r, start, correlationID),
+				responseHeaders: func() http.Header { return recorder.Header().Clone() },
+			})
+		}
 		next.ServeHTTP(recorder, r)
 		if requestCapture != nil {
 			if err := requestCapture.Close(); err != nil {
@@ -164,6 +185,9 @@ func BodyCaptureMiddleware(options BodyCaptureOptions, sink BodyCaptureSink, nex
 		}
 		if err := recorder.Close(); err != nil {
 			http.Error(w, "failed to finalize response body capture", http.StatusInternalServerError)
+			return
+		}
+		if recorder.WebSocketCaptured() {
 			return
 		}
 
@@ -241,6 +265,30 @@ func BodyCaptureMiddleware(options BodyCaptureOptions, sink BodyCaptureSink, nex
 			CorrelationID:         correlationID,
 		})
 	})
+}
+
+func baseCapturedExchange(r *http.Request, start time.Time, correlationID string) CapturedExchange {
+	identity, _ := auth.IdentityFromContext(r.Context())
+
+	exchange := CapturedExchange{
+		Context:        r.Context(),
+		StartedAt:      start.UTC(),
+		Method:         r.Method,
+		Path:           r.URL.Path,
+		StatusCode:     http.StatusSwitchingProtocols,
+		RequestHeaders: r.Header.Clone(),
+		Streaming:      true,
+		Transport:      "websocket",
+		CorrelationID:  correlationID,
+	}
+	if identity != nil {
+		exchange.GatewayOrgID = identity.OrgID
+		exchange.GatewayWorkspaceID = identity.WorkspaceID
+		exchange.GatewayKeyID = identity.KeyID
+		exchange.GatewayTeam = identity.Team
+		exchange.GatewayRole = identity.Role
+	}
+	return exchange
 }
 
 type bodySpool struct {
@@ -462,6 +510,8 @@ type captureResponseWriter struct {
 	truncated    bool
 	startedAt    time.Time
 	firstWriteUS int64
+	wsRecorder   *webSocketTurnRecorder
+	wsCaptured   bool
 }
 
 type statusResponseWriter struct {
@@ -501,6 +551,9 @@ func (w *statusResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	hijacker, ok := w.ResponseWriter.(http.Hijacker)
 	if !ok {
 		return nil, nil, http.ErrNotSupported
+	}
+	if w.statusCode == 0 {
+		w.statusCode = http.StatusSwitchingProtocols
 	}
 	return hijacker.Hijack()
 }
@@ -618,6 +671,9 @@ func (w *captureResponseWriter) capture(p []byte) {
 }
 
 func (w *captureResponseWriter) Close() error {
+	if w != nil && w.wsRecorder != nil && w.wsCaptured {
+		w.wsRecorder.Close()
+	}
 	if w == nil || w.spool == nil {
 		return nil
 	}

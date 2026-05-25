@@ -12,6 +12,7 @@ import (
 
 	"github.com/ongoingai/gateway/internal/auth"
 	"github.com/ongoingai/gateway/internal/config"
+	"github.com/ongoingai/gateway/internal/proxy"
 )
 
 type piiGuardrailDecision struct {
@@ -59,6 +60,11 @@ func piiGuardrailMiddleware(cfg config.Config, logger *slog.Logger, next http.Ha
 		mode := policy.Mode
 		if mode != config.PIIModeRedactUpstream && mode != config.PIIModeBlock {
 			next.ServeHTTP(w, r)
+			return
+		}
+		if proxy.IsWebSocketUpgrade(r) && policy.Stages.RequestBody {
+			logPIIGuardrailDeny(logger, r, mode, "websocket_body_guardrail_unsupported", orgID, workspaceID, keyID, nil, nil)
+			http.Error(w, piiGuardrailUncertaintyMessage, http.StatusServiceUnavailable)
 			return
 		}
 

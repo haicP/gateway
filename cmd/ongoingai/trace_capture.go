@@ -187,6 +187,33 @@ func buildTraceRecord(cfg config.Config, registry *providers.Registry, exchange 
 		"lineage_checkpoint_id": traceID,
 		"lineage_immutable":     true,
 	}
+	if exchange.Transport != "" {
+		metadata["transport"] = exchange.Transport
+	}
+	if exchange.WebSocketConnectionID != "" {
+		metadata["websocket_connection_id"] = exchange.WebSocketConnectionID
+	}
+	if exchange.WebSocketTurnIndex > 0 {
+		metadata["websocket_turn_index"] = exchange.WebSocketTurnIndex
+	}
+	if exchange.WebSocketTurnStartType != "" {
+		metadata["websocket_turn_start_type"] = exchange.WebSocketTurnStartType
+	}
+	if exchange.WebSocketTurnTerminalType != "" {
+		metadata["websocket_turn_terminal_type"] = exchange.WebSocketTurnTerminalType
+	}
+	if exchange.WebSocketRequestMessages > 0 {
+		metadata["websocket_request_messages"] = exchange.WebSocketRequestMessages
+	}
+	if exchange.WebSocketResponseMessages > 0 {
+		metadata["websocket_response_messages"] = exchange.WebSocketResponseMessages
+	}
+	if exchange.WebSocketTurnIncomplete {
+		metadata["websocket_turn_incomplete"] = true
+	}
+	if exchange.WebSocketCloseCode > 0 {
+		metadata["websocket_close_code"] = exchange.WebSocketCloseCode
+	}
 	if lineage.groupID != "" {
 		metadata["lineage_group_id"] = lineage.groupID
 	}
@@ -332,17 +359,20 @@ func extractModel(requestBody, responseBody []byte, streaming bool) string {
 		return model
 	}
 	if streaming {
+		if json.Valid(responseBody) {
+			return extractModelFromJSON(responseBody)
+		}
 		return extractModelFromSSE(responseBody)
 	}
 	return extractModelFromJSON(responseBody)
 }
 
 func extractModelFromJSON(body []byte) string {
-	var payload map[string]any
+	var payload any
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return ""
 	}
-	return extractModelFromPayload(payload)
+	return extractModelFromValue(payload)
 }
 
 func extractModelFromSSE(body []byte) string {
@@ -356,6 +386,9 @@ func extractModelFromSSE(body []byte) string {
 
 func extractUsage(body []byte, streaming bool) (int, int, int) {
 	if streaming {
+		if json.Valid(body) {
+			return extractUsageFromJSON(body)
+		}
 		return extractUsageFromSSE(body)
 	}
 	return extractUsageFromJSON(body)
@@ -389,11 +422,56 @@ func extractUsageFromSSE(body []byte) (int, int, int) {
 }
 
 func extractUsageFromJSON(body []byte) (int, int, int) {
-	var payload map[string]any
+	var payload any
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return 0, 0, 0
 	}
 
+	return extractUsageFromValue(payload)
+}
+
+func extractUsageFromValue(payload any) (int, int, int) {
+	switch typed := payload.(type) {
+	case []any:
+		input, output, total := 0, 0, 0
+		hasExplicitTotal := false
+		for _, item := range typed {
+			nextInput, nextOutput, nextTotal := extractUsageFromValue(item)
+			if nextInput > 0 {
+				input = nextInput
+			}
+			if nextOutput > 0 {
+				output = nextOutput
+			}
+			if nextTotal > 0 {
+				total = nextTotal
+				hasExplicitTotal = true
+			}
+		}
+		if !hasExplicitTotal {
+			total = input + output
+		} else if total < input+output {
+			total = input + output
+		}
+		return input, output, total
+	case map[string]any:
+		if nested, ok := typed["payload"]; ok {
+			if input, output, total := extractUsageFromValue(nested); input > 0 || output > 0 || total > 0 {
+				return input, output, total
+			}
+		}
+		if nested, ok := typed["response"]; ok {
+			if input, output, total := extractUsageFromValue(nested); input > 0 || output > 0 || total > 0 {
+				return input, output, total
+			}
+		}
+		return extractUsageFromPayload(typed)
+	default:
+		return 0, 0, 0
+	}
+}
+
+func extractUsageFromPayload(payload map[string]any) (int, int, int) {
 	usageObj := extractUsageObject(payload)
 	if usageObj == nil {
 		return 0, 0, 0
@@ -410,6 +488,36 @@ func extractUsageFromJSON(body []byte) (int, int, int) {
 }
 
 func extractModelFromPayload(payload map[string]any) string {
+	return extractModelFromValue(payload)
+}
+
+func extractModelFromValue(payload any) string {
+	switch typed := payload.(type) {
+	case []any:
+		for _, item := range typed {
+			if model := extractModelFromValue(item); model != "" {
+				return model
+			}
+		}
+		return ""
+	case map[string]any:
+		if nested, ok := typed["payload"]; ok {
+			if model := extractModelFromValue(nested); model != "" {
+				return model
+			}
+		}
+		if nested, ok := typed["response"]; ok {
+			if model := extractModelFromValue(nested); model != "" {
+				return model
+			}
+		}
+		return extractModelFromPayloadMap(typed)
+	default:
+		return ""
+	}
+}
+
+func extractModelFromPayloadMap(payload map[string]any) string {
 	if payload == nil {
 		return ""
 	}
@@ -442,6 +550,11 @@ func extractUsageObject(payload map[string]any) map[string]any {
 	// Anthropic message_start events can place usage under message.usage.
 	if message, ok := payload["message"].(map[string]any); ok {
 		if usageObj, ok := message["usage"].(map[string]any); ok {
+			return usageObj
+		}
+	}
+	if response, ok := payload["response"].(map[string]any); ok {
+		if usageObj, ok := response["usage"].(map[string]any); ok {
 			return usageObj
 		}
 	}

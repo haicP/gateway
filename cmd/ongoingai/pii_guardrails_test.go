@@ -133,6 +133,37 @@ func TestPIIGuardrailMiddlewareFailsClosedWhenRequestBodyExceedsInspectionLimit(
 	}
 }
 
+func TestPIIGuardrailMiddlewareFailsClosedForWebSocketBodyInspection(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Default()
+	cfg.PII.Mode = config.PIIModeRedactUpstream
+	cfg.PII.Stages.RequestBody = true
+
+	nextCalled := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusSwitchingProtocols)
+	})
+
+	handler := piiGuardrailMiddleware(cfg, nil, next)
+	req := httptest.NewRequest(http.MethodGet, "/llm/v1/responses", nil)
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+	if nextCalled {
+		t.Fatal("next handler called for websocket body guardrail")
+	}
+	if !strings.Contains(rec.Body.String(), piiGuardrailUncertaintyMessage) {
+		t.Fatalf("response body=%q, want uncertainty message", rec.Body.String())
+	}
+}
+
 func TestPIIGuardrailMiddlewareBlockFailsClosedOnPolicyUncertainty(t *testing.T) {
 	t.Parallel()
 

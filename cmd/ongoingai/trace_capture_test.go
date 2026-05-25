@@ -64,6 +64,70 @@ func TestBuildTraceRecordParsesButDoesNotStoreBodiesWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestBuildTraceRecordCapturesWebSocketTurnMetadataAndParsesEnvelope(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Default()
+	cfg.Tracing.CaptureBodies = true
+
+	exchange := &proxy.CapturedExchange{
+		Method:                    http.MethodGet,
+		Path:                      "/llm/v1/responses",
+		StatusCode:                http.StatusSwitchingProtocols,
+		RequestHeaders:            http.Header{"Authorization": {"Bearer sk-provider-secret"}},
+		ResponseHeaders:           http.Header{"Upgrade": {"websocket"}},
+		RequestBody:               []byte(`[{"direction":"client_to_upstream","opcode":"text","payload":{"type":"response.create","model":"gpt-5.5","input":[]},"bytes":61}]`),
+		ResponseBody:              []byte(`[{"direction":"upstream_to_client","opcode":"text","payload":{"type":"response.completed","response":{"usage":{"input_tokens":11,"output_tokens":7,"total_tokens":18}}},"bytes":120}]`),
+		RequestBodyBytes:          61,
+		ResponseBodyBytes:         120,
+		Streaming:                 true,
+		StreamChunks:              2,
+		Transport:                 "websocket",
+		WebSocketConnectionID:     "ws-test",
+		WebSocketTurnIndex:        2,
+		WebSocketTurnStartType:    "response.create",
+		WebSocketTurnTerminalType: "response.completed",
+		WebSocketRequestMessages:  1,
+		WebSocketResponseMessages: 1,
+		TimeToFirstTokenUS:        1500,
+		DurationMS:                25,
+	}
+
+	record := buildTraceRecord(cfg, providers.DefaultRegistry(), exchange)
+	if record.Model != "gpt-5.5" {
+		t.Fatalf("model=%q, want gpt-5.5", record.Model)
+	}
+	if record.InputTokens != 11 || record.OutputTokens != 7 || record.TotalTokens != 18 {
+		t.Fatalf("usage=%d/%d/%d", record.InputTokens, record.OutputTokens, record.TotalTokens)
+	}
+	if !strings.Contains(record.RequestBody, "response.create") {
+		t.Fatalf("request body=%q", record.RequestBody)
+	}
+	if !strings.Contains(record.ResponseBody, "response.completed") {
+		t.Fatalf("response body=%q", record.ResponseBody)
+	}
+
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(record.Metadata), &metadata); err != nil {
+		t.Fatalf("unmarshal metadata: %v", err)
+	}
+	if metadata["transport"] != "websocket" {
+		t.Fatalf("transport metadata=%v", metadata["transport"])
+	}
+	if metadata["websocket_connection_id"] != "ws-test" {
+		t.Fatalf("websocket_connection_id=%v", metadata["websocket_connection_id"])
+	}
+	if metadata["websocket_turn_start_type"] != "response.create" || metadata["websocket_turn_terminal_type"] != "response.completed" {
+		t.Fatalf("websocket metadata=%v", metadata)
+	}
+	if metadata["websocket_turn_index"] != float64(2) {
+		t.Fatalf("websocket_turn_index=%v", metadata["websocket_turn_index"])
+	}
+	if record.TimeToFirstTokenUS != 1500 || record.TimeToFirstTokenMS != 2 {
+		t.Fatalf("ttft us/ms=%d/%d", record.TimeToFirstTokenUS, record.TimeToFirstTokenMS)
+	}
+}
+
 func TestBuildTraceRecordUsesRequestStartTimeForTimestamp(t *testing.T) {
 	t.Parallel()
 
