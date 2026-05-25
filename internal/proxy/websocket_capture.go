@@ -32,6 +32,10 @@ type webSocketTurnRecorder struct {
 	serverParser websocketFrameParser
 	closeCode    int
 	closed       bool
+	eventsMu     sync.Mutex
+	events       chan websocketCaptureEvent
+	eventsDone   chan struct{}
+	eventsClosed bool
 }
 
 type webSocketTurn struct {
@@ -63,6 +67,11 @@ type websocketCapturedMessage struct {
 	Truncated     bool   `json:"truncated,omitempty"`
 }
 
+type websocketCaptureEvent struct {
+	direction string
+	data      []byte
+}
+
 type websocketObservedConn struct {
 	net.Conn
 	recorder *webSocketTurnRecorder
@@ -86,6 +95,8 @@ const (
 	websocketOpcodeText         = 0x1
 	websocketOpcodeBinary       = 0x2
 	websocketOpcodeClose        = 0x8
+
+	websocketCaptureQueueSize = 256
 )
 
 // IsWebSocketUpgrade reports whether a request is attempting a WebSocket
@@ -116,11 +127,19 @@ func (w *captureResponseWriter) EnableWebSocketCapture(config webSocketCaptureCo
 	if config.maxBodySize < 0 {
 		config.maxBodySize = 0
 	}
-	w.wsRecorder = &webSocketTurnRecorder{
+	w.wsRecorder = newWebSocketTurnRecorder(config)
+}
+
+func newWebSocketTurnRecorder(config webSocketCaptureConfig) *webSocketTurnRecorder {
+	recorder := &webSocketTurnRecorder{
 		config:       config,
 		connectionID: newWebSocketConnectionID(),
 		startedAt:    config.base.StartedAt,
+		events:       make(chan websocketCaptureEvent, websocketCaptureQueueSize),
+		eventsDone:   make(chan struct{}),
 	}
+	go recorder.runCaptureEvents()
+	return recorder
 }
 
 func (w *captureResponseWriter) WebSocketCaptured() bool {
@@ -147,14 +166,14 @@ func (w *captureResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 func (c *websocketObservedConn) Read(p []byte) (int, error) {
 	n, err := c.Conn.Read(p)
 	if n > 0 && c.recorder != nil {
-		c.recorder.ObserveClientBytes(p[:n])
+		c.recorder.EnqueueClientBytes(p[:n])
 	}
 	return n, err
 }
 
 func (c *websocketObservedConn) Write(p []byte) (int, error) {
 	if len(p) > 0 && c.recorder != nil {
-		c.recorder.ObserveServerBytes(p)
+		c.recorder.EnqueueServerBytes(p)
 	}
 	n, err := c.Conn.Write(p)
 	return n, err
@@ -167,21 +186,65 @@ func (c *websocketObservedConn) Close() error {
 	return c.Conn.Close()
 }
 
+func (r *webSocketTurnRecorder) EnqueueClientBytes(data []byte) {
+	r.enqueueBytes("client_to_upstream", data)
+}
+
+func (r *webSocketTurnRecorder) EnqueueServerBytes(data []byte) {
+	r.enqueueBytes("upstream_to_client", data)
+}
+
+func (r *webSocketTurnRecorder) enqueueBytes(direction string, data []byte) {
+	if r == nil || len(data) == 0 {
+		return
+	}
+	copied := append([]byte(nil), data...)
+	if r.events == nil {
+		r.observeBytes(direction, copied)
+		return
+	}
+
+	r.eventsMu.Lock()
+	defer r.eventsMu.Unlock()
+	if r.eventsClosed {
+		return
+	}
+	r.events <- websocketCaptureEvent{direction: direction, data: copied}
+}
+
+func (r *webSocketTurnRecorder) runCaptureEvents() {
+	defer close(r.eventsDone)
+	for event := range r.events {
+		r.observeBytes(event.direction, event.data)
+	}
+}
+
 func (r *webSocketTurnRecorder) ObserveClientBytes(data []byte) {
 	if r == nil || len(data) == 0 {
 		return
 	}
-	for _, frame := range r.clientParser.Add(data) {
-		r.observeFrame("client_to_upstream", frame)
-	}
+	r.observeBytes("client_to_upstream", data)
 }
 
 func (r *webSocketTurnRecorder) ObserveServerBytes(data []byte) {
 	if r == nil || len(data) == 0 {
 		return
 	}
-	for _, frame := range r.serverParser.Add(data) {
-		r.observeFrame("upstream_to_client", frame)
+	r.observeBytes("upstream_to_client", data)
+}
+
+func (r *webSocketTurnRecorder) observeBytes(direction string, data []byte) {
+	var frames []websocketFrame
+	switch direction {
+	case "client_to_upstream":
+		frames = r.clientParser.Add(data)
+	case "upstream_to_client":
+		frames = r.serverParser.Add(data)
+	default:
+		return
+	}
+	for _, frame := range frames {
+		r.observeFrame(direction, frame)
 	}
 }
 
@@ -189,6 +252,19 @@ func (r *webSocketTurnRecorder) Close() {
 	if r == nil {
 		return
 	}
+	if r.events != nil {
+		r.eventsMu.Lock()
+		if !r.eventsClosed {
+			r.eventsClosed = true
+			close(r.events)
+		}
+		done := r.eventsDone
+		r.eventsMu.Unlock()
+		if done != nil {
+			<-done
+		}
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
@@ -204,6 +280,9 @@ func (r *webSocketTurnRecorder) Close() {
 func (r *webSocketTurnRecorder) observeFrame(direction string, frame websocketFrame) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.closed {
+		return
+	}
 
 	switch frame.opcode {
 	case websocketOpcodeClose:
