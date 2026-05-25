@@ -79,6 +79,7 @@ type TraceExportFilter struct {
 type TraceResult struct {
 	Items      []*Trace
 	NextCursor string
+	TotalCount int64
 }
 
 // TraceExportResult contains one page of exported traces and the next-page cursor.

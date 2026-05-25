@@ -683,6 +683,14 @@ func (s *PostgresStore) QueryTraces(ctx context.Context, filter TraceFilter) (*T
 	if err != nil {
 		return nil, err
 	}
+
+	countFilter := filter
+	countFilter.Cursor = ""
+	totalCount, err := s.countFilteredTraces(ctx, countFilter)
+	if err != nil {
+		return nil, err
+	}
+
 	limitPlaceholder := fmt.Sprintf("$%d", len(args)+1)
 	args = append(args, limit+1)
 
@@ -719,7 +727,20 @@ func (s *PostgresStore) QueryTraces(ctx context.Context, filter TraceFilter) (*T
 	return &TraceResult{
 		Items:      items,
 		NextCursor: nextCursor,
+		TotalCount: totalCount,
 	}, nil
+}
+
+func (s *PostgresStore) countFilteredTraces(ctx context.Context, filter TraceFilter) (int64, error) {
+	whereSQL, args, err := buildPostgresTraceWhere(filter)
+	if err != nil {
+		return 0, err
+	}
+	var count int64
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM traces WHERE "+whereSQL, args...).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count filtered traces: %w", err)
+	}
+	return count, nil
 }
 
 func (s *PostgresStore) ExportTraces(ctx context.Context, filter TraceExportFilter) (*TraceExportResult, error) {

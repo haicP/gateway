@@ -222,6 +222,9 @@ func TestPostgresStoreWritesAndQueriesTraces(t *testing.T) {
 	if firstPage.NextCursor == "" {
 		t.Fatal("first page next cursor should not be empty")
 	}
+	if firstPage.TotalCount != 2 {
+		t.Fatalf("first page total count=%d, want 2", firstPage.TotalCount)
+	}
 
 	secondPage, err := store.QueryTraces(context.Background(), TraceFilter{
 		Provider: "openai",
@@ -239,6 +242,9 @@ func TestPostgresStoreWritesAndQueriesTraces(t *testing.T) {
 	}
 	if secondPage.NextCursor != "" {
 		t.Fatalf("second page next cursor=%q, want empty", secondPage.NextCursor)
+	}
+	if secondPage.TotalCount != 2 {
+		t.Fatalf("second page total count=%d, want 2", secondPage.TotalCount)
 	}
 	summaryPage, err := store.QueryTraces(context.Background(), TraceFilter{
 		Provider: "anthropic",

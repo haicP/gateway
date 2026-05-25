@@ -461,6 +461,14 @@ func (s *SQLiteStore) QueryTraces(ctx context.Context, filter TraceFilter) (*Tra
 	if err != nil {
 		return nil, err
 	}
+
+	countFilter := filter
+	countFilter.Cursor = ""
+	totalCount, err := s.countFilteredTraces(ctx, countFilter)
+	if err != nil {
+		return nil, err
+	}
+
 	args = append(args, limit+1)
 
 	query := "SELECT " + traceSummarySelectColumns + " FROM traces WHERE " + whereSQL + " ORDER BY created_at DESC, id DESC LIMIT ?"
@@ -496,7 +504,20 @@ func (s *SQLiteStore) QueryTraces(ctx context.Context, filter TraceFilter) (*Tra
 	return &TraceResult{
 		Items:      items,
 		NextCursor: nextCursor,
+		TotalCount: totalCount,
 	}, nil
+}
+
+func (s *SQLiteStore) countFilteredTraces(ctx context.Context, filter TraceFilter) (int64, error) {
+	whereSQL, args, err := buildTraceWhere(filter)
+	if err != nil {
+		return 0, err
+	}
+	var count int64
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM traces WHERE "+whereSQL, args...).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count filtered traces: %w", err)
+	}
+	return count, nil
 }
 
 func (s *SQLiteStore) ExportTraces(ctx context.Context, filter TraceExportFilter) (*TraceExportResult, error) {

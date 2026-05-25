@@ -20,6 +20,7 @@ import (
 type tracesResponse struct {
 	Items      []traceSummary `json:"items"`
 	NextCursor string         `json:"next_cursor,omitempty"`
+	TotalCount int64          `json:"total_count"`
 }
 
 type traceSummary struct {
@@ -178,6 +179,7 @@ func TracesHandler(store trace.TraceStore, providerPrefixes []string) http.Handl
 		writeJSON(w, http.StatusOK, tracesResponse{
 			Items:      items,
 			NextCursor: result.NextCursor,
+			TotalCount: result.TotalCount,
 		})
 	})
 }

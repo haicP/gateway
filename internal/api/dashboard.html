@@ -431,6 +431,19 @@
       border-top: 1px solid rgba(226, 232, 240, 0.88);
     }
 
+    .summary-block {
+      display: grid;
+      gap: 4px;
+      min-width: 180px;
+    }
+
+    .summary-total {
+      color: var(--text);
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      font-feature-settings: "tnum";
+    }
+
     .pager {
       display: flex;
       gap: 8px;
@@ -441,6 +454,22 @@
     .pager button {
       min-width: 44px;
       padding: 0 12px;
+    }
+
+    .page-jump {
+      width: 72px;
+      padding: 0 10px;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+      font-feature-settings: "tnum";
+    }
+
+    .page-total {
+      min-width: 56px;
+      text-align: center;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      font-feature-settings: "tnum";
     }
 
     .muted {
@@ -750,7 +779,10 @@
       </div>
 
       <footer class="footer">
-        <div id="summary" class="muted">显示 0 条结果</div>
+        <div class="summary-block">
+          <div id="summary" class="muted">显示 0 条结果</div>
+          <div id="totalSummary" class="summary-total">共 0 条匹配结果</div>
+        </div>
         <div class="pager">
           <label for="limit" class="muted">每页</label>
           <select id="limit">
@@ -759,6 +791,10 @@
             <option>100</option>
             <option>200</option>
           </select>
+          <span id="pageTotal" class="page-total">共 0 页</span>
+          <label for="pageJump" class="muted">跳至</label>
+          <input id="pageJump" class="page-jump" type="number" min="1" value="1" inputmode="numeric">
+          <button id="jumpPage" class="ghost" type="button">跳转</button>
           <button id="prev" class="ghost" type="button">上一页</button>
           <button id="next" class="ghost" type="button">下一页</button>
         </div>
@@ -803,6 +839,7 @@
       cursorStack: [''],
       pageIndex: 0,
       nextCursor: '',
+      totalCount: 0,
       loading: false,
     };
 
@@ -826,10 +863,10 @@
       if (event.key === 'Escape') closeDetail();
     });
     $('prev').addEventListener('click', () => loadPage(state.pageIndex - 1));
-    $('next').addEventListener('click', () => {
-      if (!state.nextCursor) return;
-      state.cursorStack[state.pageIndex + 1] = state.nextCursor;
-      loadPage(state.pageIndex + 1);
+    $('next').addEventListener('click', () => loadPage(state.pageIndex + 1));
+    $('jumpPage').addEventListener('click', jumpToPage);
+    $('pageJump').addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') jumpToPage();
     });
     $('limit').addEventListener('change', () => loadFirstPage());
 
@@ -852,30 +889,99 @@
 
     async function loadPage(index) {
       if (index < 0 || state.loading) return;
+      if (index === state.pageIndex + 1 && !state.cursorStack[index] && state.nextCursor) {
+        state.cursorStack[index] = state.nextCursor;
+      }
+      if (index > 0 && !state.cursorStack[index]) return;
       state.loading = true;
       setButtons();
       try {
-        const params = await buildParams();
-        const cursor = state.cursorStack[index] || '';
-        if (cursor) params.set('cursor', cursor);
-        const res = await fetch('/api/traces?' + params.toString(), {
-          headers: { 'Accept': 'application/json' },
-        });
-        if (!res.ok) throw new Error(await errorMessage(res));
-        const payload = await res.json();
-        state.items = Array.isArray(payload.items) ? payload.items : [];
-        state.nextCursor = payload.next_cursor || '';
-        state.pageIndex = index;
+        const payload = await fetchTracePage(index);
+        applyTracePage(payload, index);
         render();
       } catch (err) {
-        rows.innerHTML = '';
-        empty.hidden = false;
-        empty.textContent = err.message || '加载失败';
-        $('summary').textContent = '加载失败';
+        renderLoadError(err);
       } finally {
         state.loading = false;
         setButtons();
       }
+    }
+
+    async function jumpToPage() {
+      if (state.loading) return;
+      const totalPages = pageCount();
+      if (totalPages <= 0) return;
+      const requested = Number($('pageJump').value);
+      if (!Number.isFinite(requested)) return;
+      const targetIndex = Math.min(Math.max(Math.trunc(requested), 1), totalPages) - 1;
+      state.loading = true;
+      setButtons();
+      try {
+        await ensureCursorForPage(targetIndex);
+        const payload = await fetchTracePage(targetIndex);
+        applyTracePage(payload, targetIndex);
+        render();
+      } catch (err) {
+        renderLoadError(err);
+      } finally {
+        state.loading = false;
+        setButtons();
+      }
+    }
+
+    async function ensureCursorForPage(targetIndex) {
+      if (targetIndex <= 0 || state.cursorStack[targetIndex]) return;
+      if (targetIndex === state.pageIndex + 1 && state.nextCursor) {
+        state.cursorStack[targetIndex] = state.nextCursor;
+        return;
+      }
+
+      let startIndex = 0;
+      for (let index = 0; index < targetIndex; index += 1) {
+        if (state.cursorStack[index] !== undefined) startIndex = index;
+      }
+
+      for (let index = startIndex; index < targetIndex; index += 1) {
+        if (index === state.pageIndex && state.nextCursor) {
+          state.cursorStack[index + 1] = state.nextCursor;
+          continue;
+        }
+        const payload = await fetchTracePage(index);
+        const nextCursor = payload.next_cursor || '';
+        if (!nextCursor) throw new Error('目标页超出当前查询结果');
+        state.cursorStack[index + 1] = nextCursor;
+      }
+    }
+
+    async function fetchTracePage(index) {
+      const params = await buildParams();
+      const cursor = state.cursorStack[index] || '';
+      if (cursor) params.set('cursor', cursor);
+      const res = await fetch('/api/traces?' + params.toString(), {
+        headers: { 'Accept': 'application/json' },
+      });
+      if (!res.ok) throw new Error(await errorMessage(res));
+      return res.json();
+    }
+
+    function applyTracePage(payload, index) {
+      state.items = Array.isArray(payload.items) ? payload.items : [];
+      state.nextCursor = payload.next_cursor || '';
+      state.totalCount = Number(payload.total_count || 0);
+      state.pageIndex = index;
+      if (state.nextCursor) state.cursorStack[index + 1] = state.nextCursor;
+    }
+
+    function renderLoadError(err) {
+      state.items = [];
+      state.nextCursor = '';
+      state.totalCount = 0;
+      rows.innerHTML = '';
+      empty.hidden = false;
+      empty.textContent = err.message || '加载失败';
+      $('summary').textContent = '加载失败';
+      $('totalSummary').textContent = '共 0 条匹配结果';
+      $('pageTotal').textContent = '共 0 页';
     }
 
     async function buildParams() {
@@ -946,6 +1052,10 @@
       const start = state.items.length === 0 ? 0 : state.pageIndex * Number($('limit').value) + 1;
       const end = start + state.items.length - 1;
       $('summary').textContent = state.items.length ? `显示 ${start} 至 ${end} 条结果` : '显示 0 条结果';
+      $('totalSummary').textContent = `共 ${formatNumber(state.totalCount)} 条匹配结果`;
+      $('pageTotal').textContent = `共 ${formatNumber(pageCount())} 页`;
+      $('pageJump').max = String(Math.max(pageCount(), 1));
+      $('pageJump').value = String(state.pageIndex + 1);
     }
 
     function td(content, className = '') {
@@ -998,6 +1108,18 @@
       $('prev').disabled = state.loading || state.pageIndex === 0;
       $('next').disabled = state.loading || !state.nextCursor;
       $('refresh').disabled = state.loading;
+      $('jumpPage').disabled = state.loading || pageCount() <= 1;
+      $('pageJump').disabled = state.loading || pageCount() <= 1;
+    }
+
+    function pageCount() {
+      const limit = Number($('limit').value || 50);
+      if (!limit || state.totalCount <= 0) return 0;
+      return Math.ceil(state.totalCount / limit);
+    }
+
+    function formatNumber(value) {
+      return Number(value || 0).toLocaleString();
     }
 
     async function openDetail(id) {
