@@ -9,4 +9,10 @@ jobs:
   trigger:
     runs-on: ubuntu-latest
     steps:
-      - run: curl -X POST "${{ secrets.VERCEL_DEPLOY_HOOK }}"
+      - name: Trigger deploy hook
+        if: ${{ secrets.VERCEL_DEPLOY_HOOK != '' }}
+        run: curl -X POST "${{ secrets.VERCEL_DEPLOY_HOOK }}"
+
+      - name: Skip when deploy hook is not configured
+        if: ${{ secrets.VERCEL_DEPLOY_HOOK == '' }}
+        run: echo "VERCEL_DEPLOY_HOOK is not configured; skipping docs site rebuild."
