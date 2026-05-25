@@ -310,6 +310,24 @@ func TestPostgresStoreWritesAndQueriesTraces(t *testing.T) {
 	}
 }
 
+func TestBuildPostgresTraceWhereFiltersEndpointPaths(t *testing.T) {
+	t.Parallel()
+
+	where, args, err := buildPostgresTraceWhere(TraceFilter{
+		EndpointPaths: []string{"/v1/responses", "/llmgateway/v1/responses"},
+	})
+	if err != nil {
+		t.Fatalf("buildPostgresTraceWhere() error: %v", err)
+	}
+	if !strings.Contains(where, "request_path IN ($1, $2)") {
+		t.Fatalf("where=%q, want request_path IN condition", where)
+	}
+	wantArgs := []any{"/v1/responses", "/llmgateway/v1/responses"}
+	if !reflect.DeepEqual(args, wantArgs) {
+		t.Fatalf("args=%v, want %v", args, wantArgs)
+	}
+}
+
 func TestPostgresStoreWritesCompressedSpoolBodiesAndQueriesSummaries(t *testing.T) {
 	store := newPostgresTestStore(t)
 

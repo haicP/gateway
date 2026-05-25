@@ -804,6 +804,13 @@ func buildPostgresTraceWhere(filter TraceFilter) (string, []any, error) {
 	if filter.Model != "" {
 		builder.addComparison("model", "=", filter.Model)
 	}
+	if len(filter.EndpointPaths) > 0 {
+		placeholders := make([]string, 0, len(filter.EndpointPaths))
+		for _, path := range filter.EndpointPaths {
+			placeholders = append(placeholders, builder.addArg(path))
+		}
+		builder.addCondition("request_path IN (" + strings.Join(placeholders, ", ") + ")")
+	}
 	if filter.APIKeyHash != "" {
 		builder.addComparison("api_key_hash", "=", filter.APIKeyHash)
 	}

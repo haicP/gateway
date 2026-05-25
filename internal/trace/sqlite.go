@@ -578,6 +578,14 @@ func buildTraceWhere(filter TraceFilter) (string, []any, error) {
 		where = append(where, "model = ?")
 		args = append(args, filter.Model)
 	}
+	if len(filter.EndpointPaths) > 0 {
+		placeholders := make([]string, 0, len(filter.EndpointPaths))
+		for _, path := range filter.EndpointPaths {
+			placeholders = append(placeholders, "?")
+			args = append(args, path)
+		}
+		where = append(where, "request_path IN ("+strings.Join(placeholders, ", ")+")")
+	}
 	if filter.APIKeyHash != "" {
 		where = append(where, "api_key_hash = ?")
 		args = append(args, filter.APIKeyHash)

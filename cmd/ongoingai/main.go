@@ -282,10 +282,12 @@ func runServe(args []string) int {
 
 	providerRegistry := providers.DefaultRegistry()
 	apiHandler := api.NewCoreRouter(api.RouterOptions{
-		AppVersion:    version.String(),
-		Store:         traceStore,
-		StorageDriver: cfg.Storage.Driver,
-		StoragePath:   cfg.Storage.Path,
+		AppVersion:       version.String(),
+		Store:            traceStore,
+		StorageDriver:    cfg.Storage.Driver,
+		StoragePath:      cfg.Storage.Path,
+		ProviderPrefixes: providerPrefixesFromConfig(cfg),
+		DashboardEnabled: cfg.Dashboard.Enabled,
 	})
 	proxyOptions := proxy.HandlerOptions{}
 	proxyHandler, err := proxy.NewHandlerWithOptions(proxyRoutesFromConfig(cfg), logger, apiHandler, proxyOptions)
@@ -351,6 +353,7 @@ func runServe(args []string) int {
 		"config_path", *configPath,
 		"mode", "lightweight_proxy_recorder",
 		"request_details_backup_enabled", cfg.Backup.RequestDetails.Enabled,
+		"dashboard_enabled", cfg.Dashboard.Enabled,
 		"trace_retention_cleanup_enabled", cfg.Tracing.Retention.CleanupEnabled,
 		"trace_retention_days", cfg.Tracing.Retention.Days,
 	)
@@ -786,6 +789,15 @@ func proxyRoutesFromConfig(cfg config.Config) []proxy.Route {
 	return routes
 }
 
+func providerPrefixesFromConfig(cfg config.Config) []string {
+	names := sortedProviderNames(cfg.Providers)
+	prefixes := make([]string, 0, len(names))
+	for _, name := range names {
+		prefixes = append(prefixes, cfg.Providers[name].Prefix)
+	}
+	return prefixes
+}
+
 func sortedProviderNames(providers config.ProvidersConfig) []string {
 	names := make([]string, 0, len(providers))
 	for name := range providers {
@@ -806,5 +818,5 @@ func requestCorrelationID(req *http.Request) string {
 }
 
 func shouldCaptureTrace(path string) bool {
-	return !pathutil.HasPathPrefix(path, "/api")
+	return !pathutil.HasPathPrefix(path, "/api") && !pathutil.HasPathPrefix(path, "/dashboard")
 }

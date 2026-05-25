@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ongoingai/gateway/internal/pathutil"
 	"github.com/ongoingai/gateway/internal/trace"
 )
 
@@ -28,7 +29,9 @@ type traceSummary struct {
 	Model              string    `json:"model"`
 	RequestMethod      string    `json:"request_method"`
 	RequestPath        string    `json:"request_path"`
+	Endpoint           string    `json:"endpoint"`
 	ResponseStatus     int       `json:"response_status"`
+	UserAgent          string    `json:"user_agent,omitempty"`
 	InputTokens        int       `json:"input_tokens"`
 	OutputTokens       int       `json:"output_tokens"`
 	TotalTokens        int       `json:"total_tokens"`
@@ -49,6 +52,7 @@ type traceDetail struct {
 	Model              string        `json:"model"`
 	RequestMethod      string        `json:"request_method"`
 	RequestPath        string        `json:"request_path"`
+	Endpoint           string        `json:"endpoint"`
 	RequestHeaders     any           `json:"request_headers,omitempty"`
 	RequestBody        string        `json:"request_body,omitempty"`
 	ResponseStatus     int           `json:"response_status"`
@@ -136,7 +140,8 @@ const (
 	traceForkBodyLimit            = 16 << 10
 )
 
-func TracesHandler(store trace.TraceStore) http.Handler {
+func TracesHandler(store trace.TraceStore, providerPrefixes []string) http.Handler {
+	prefixes := normalizeDashboardProviderPrefixes(providerPrefixes)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !requireMethod(w, r, http.MethodGet) {
 			return
@@ -146,7 +151,7 @@ func TracesHandler(store trace.TraceStore) http.Handler {
 			return
 		}
 
-		filter, err := parseTraceFilter(r)
+		filter, err := parseTraceFilter(r, prefixes)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -167,7 +172,7 @@ func TracesHandler(store trace.TraceStore) http.Handler {
 
 		items := make([]traceSummary, 0, len(result.Items))
 		for _, item := range result.Items {
-			items = append(items, summarizeTrace(item))
+			items = append(items, summarizeTrace(item, prefixes))
 		}
 
 		writeJSON(w, http.StatusOK, tracesResponse{
@@ -177,7 +182,8 @@ func TracesHandler(store trace.TraceStore) http.Handler {
 	})
 }
 
-func TraceDetailHandler(store trace.TraceStore) http.Handler {
+func TraceDetailHandler(store trace.TraceStore, providerPrefixes []string) http.Handler {
+	prefixes := normalizeDashboardProviderPrefixes(providerPrefixes)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if store == nil {
 			writeError(w, http.StatusServiceUnavailable, "trace store is not configured")
@@ -199,12 +205,12 @@ func TraceDetailHandler(store trace.TraceStore) http.Handler {
 			if !ok {
 				return
 			}
-			writeJSON(w, http.StatusOK, detailTrace(item))
+			writeJSON(w, http.StatusOK, detailTrace(item, prefixes))
 		case "replay":
 			if !requireMethod(w, r, http.MethodGet) {
 				return
 			}
-			handleTraceReplay(w, r, store, route.ID)
+			handleTraceReplay(w, r, store, route.ID, prefixes)
 		case "fork":
 			if !requireMethod(w, r, http.MethodPost) {
 				return
@@ -217,7 +223,7 @@ func TraceDetailHandler(store trace.TraceStore) http.Handler {
 	})
 }
 
-func parseTraceFilter(r *http.Request) (trace.TraceFilter, error) {
+func parseTraceFilter(r *http.Request, providerPrefixes []string) (trace.TraceFilter, error) {
 	query := r.URL.Query()
 	limit, err := parseIntQuery(query.Get("limit"), "limit", 0, 200)
 	if err != nil {
@@ -252,26 +258,27 @@ func parseTraceFilter(r *http.Request) (trace.TraceFilter, error) {
 	}
 
 	filter := trace.TraceFilter{
-		TraceGroupID: strings.TrimSpace(query.Get("trace_group_id")),
-		ThreadID:     strings.TrimSpace(query.Get("thread_id")),
-		RunID:        strings.TrimSpace(query.Get("run_id")),
-		Provider:     strings.TrimSpace(query.Get("provider")),
-		Model:        strings.TrimSpace(query.Get("model")),
-		APIKeyHash:   strings.TrimSpace(query.Get("api_key_hash")),
-		StatusCode:   statusCode,
-		MinTokens:    minTokens,
-		MaxTokens:    maxTokens,
-		From:         from,
-		To:           to,
-		Limit:        limit,
-		Cursor:       strings.TrimSpace(query.Get("cursor")),
+		TraceGroupID:  strings.TrimSpace(query.Get("trace_group_id")),
+		ThreadID:      strings.TrimSpace(query.Get("thread_id")),
+		RunID:         strings.TrimSpace(query.Get("run_id")),
+		Provider:      strings.TrimSpace(query.Get("provider")),
+		Model:         strings.TrimSpace(query.Get("model")),
+		EndpointPaths: traceEndpointPathCandidates(query.Get("endpoint"), providerPrefixes),
+		APIKeyHash:    strings.TrimSpace(query.Get("api_key_hash")),
+		StatusCode:    statusCode,
+		MinTokens:     minTokens,
+		MaxTokens:     maxTokens,
+		From:          from,
+		To:            to,
+		Limit:         limit,
+		Cursor:        strings.TrimSpace(query.Get("cursor")),
 	}
 	applyTraceTenantScope(r, &filter)
 
 	return filter, nil
 }
 
-func summarizeTrace(item *trace.Trace) traceSummary {
+func summarizeTrace(item *trace.Trace, providerPrefixes []string) traceSummary {
 	return traceSummary{
 		ID:                 item.ID,
 		Timestamp:          item.Timestamp,
@@ -279,7 +286,9 @@ func summarizeTrace(item *trace.Trace) traceSummary {
 		Model:              item.Model,
 		RequestMethod:      item.RequestMethod,
 		RequestPath:        item.RequestPath,
+		Endpoint:           displayEndpoint(item.RequestPath, providerPrefixes),
 		ResponseStatus:     item.ResponseStatus,
+		UserAgent:          extractTraceUserAgent(item.RequestHeaders),
 		InputTokens:        item.InputTokens,
 		OutputTokens:       item.OutputTokens,
 		TotalTokens:        item.TotalTokens,
@@ -292,7 +301,7 @@ func summarizeTrace(item *trace.Trace) traceSummary {
 	}
 }
 
-func detailTrace(item *trace.Trace) traceDetail {
+func detailTrace(item *trace.Trace, providerPrefixes []string) traceDetail {
 	metadata := decodeJSONField(item.Metadata)
 	return traceDetail{
 		ID:                 item.ID,
@@ -303,6 +312,7 @@ func detailTrace(item *trace.Trace) traceDetail {
 		Model:              item.Model,
 		RequestMethod:      item.RequestMethod,
 		RequestPath:        item.RequestPath,
+		Endpoint:           displayEndpoint(item.RequestPath, providerPrefixes),
 		RequestHeaders:     decodeJSONField(item.RequestHeaders),
 		RequestBody:        item.RequestBody,
 		ResponseStatus:     item.ResponseStatus,
@@ -576,7 +586,7 @@ func traceVisibleInTenantScope(r *http.Request, item *trace.Trace) bool {
 	return true
 }
 
-func handleTraceReplay(w http.ResponseWriter, r *http.Request, store trace.TraceStore, sourceTraceID string) {
+func handleTraceReplay(w http.ResponseWriter, r *http.Request, store trace.TraceStore, sourceTraceID string, providerPrefixes []string) {
 	source, ok := loadScopedTrace(w, r, store, sourceTraceID)
 	if !ok {
 		return
@@ -700,7 +710,7 @@ func handleTraceReplay(w http.ResponseWriter, r *http.Request, store trace.Trace
 		Lineage:            targetLineage,
 		Checkpoints:        checkpoints,
 		Truncated:          replayTruncated && targetIndex == len(replayItems)-1,
-		TargetTrace:        detailTrace(targetTrace),
+		TargetTrace:        detailTrace(targetTrace, providerPrefixes),
 	})
 }
 
@@ -869,6 +879,96 @@ func firstNonEmpty(values ...string) string {
 		value = strings.TrimSpace(value)
 		if value != "" {
 			return value
+		}
+	}
+	return ""
+}
+
+func normalizeDashboardProviderPrefixes(prefixes []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		normalized := pathutil.NormalizePrefix(prefix)
+		if normalized == "/" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out
+}
+
+func traceEndpointPathCandidates(raw string, providerPrefixes []string) []string {
+	endpoint := normalizeEndpointPath(raw)
+	if endpoint == "" {
+		return nil
+	}
+	seen := map[string]struct{}{endpoint: {}}
+	out := []string{endpoint}
+	for _, prefix := range providerPrefixes {
+		prefixed := pathutil.NormalizePrefix(prefix) + endpoint
+		if _, ok := seen[prefixed]; ok {
+			continue
+		}
+		seen[prefixed] = struct{}{}
+		out = append(out, prefixed)
+	}
+	return out
+}
+
+func normalizeEndpointPath(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	if !strings.HasPrefix(value, "/") {
+		value = "/" + value
+	}
+	if len(value) > 1 {
+		value = strings.TrimRight(value, "/")
+	}
+	return value
+}
+
+func displayEndpoint(requestPath string, providerPrefixes []string) string {
+	path := normalizeEndpointPath(requestPath)
+	if path == "" {
+		return "/"
+	}
+	for _, prefix := range providerPrefixes {
+		if pathutil.HasPathPrefix(path, prefix) {
+			return pathutil.StripPathPrefix(path, prefix)
+		}
+	}
+	return path
+}
+
+func extractTraceUserAgent(rawHeaders string) string {
+	decoded := decodeJSONField(rawHeaders)
+	headers, ok := decoded.(map[string]any)
+	if !ok {
+		return ""
+	}
+	for key, value := range headers {
+		if !strings.EqualFold(key, "User-Agent") {
+			continue
+		}
+		switch typed := value.(type) {
+		case []any:
+			parts := make([]string, 0, len(typed))
+			for _, item := range typed {
+				if part, ok := item.(string); ok && strings.TrimSpace(part) != "" {
+					parts = append(parts, strings.TrimSpace(part))
+				}
+			}
+			return strings.Join(parts, ", ")
+		case string:
+			return strings.TrimSpace(typed)
+		default:
+			return strings.TrimSpace(fmt.Sprint(typed))
 		}
 	}
 	return ""

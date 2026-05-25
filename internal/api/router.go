@@ -11,10 +11,12 @@ import (
 )
 
 type RouterOptions struct {
-	AppVersion    string
-	Store         trace.TraceStore
-	StorageDriver string
-	StoragePath   string
+	AppVersion       string
+	Store            trace.TraceStore
+	StorageDriver    string
+	StoragePath      string
+	ProviderPrefixes []string
+	DashboardEnabled bool
 }
 
 // NewCoreRouter exposes only the lightweight gateway management surface:
@@ -30,8 +32,11 @@ func NewCoreRouter(options RouterOptions) http.Handler {
 		StoragePath:   options.StoragePath,
 		Store:         options.Store,
 	}))
-	mux.Handle("/api/traces", TracesHandler(options.Store))
-	mux.Handle("/api/traces/", TraceDetailHandler(options.Store))
+	mux.Handle("/api/traces", TracesHandler(options.Store, options.ProviderPrefixes))
+	mux.Handle("/api/traces/", TraceDetailHandler(options.Store, options.ProviderPrefixes))
+	if options.DashboardEnabled {
+		mux.Handle("/dashboard", DashboardHandler())
+	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)

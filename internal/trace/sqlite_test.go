@@ -487,6 +487,19 @@ func TestSQLiteStoreGetTraceAndQueryTraces(t *testing.T) {
 		t.Fatalf("token filter returned unexpected items: %#v", tokenFilter.Items)
 	}
 
+	endpointFilter, err := store.QueryTraces(context.Background(), TraceFilter{
+		EndpointPaths: []string{"/v1/chat/completions", "/openai/v1/chat/completions"},
+	})
+	if err != nil {
+		t.Fatalf("QueryTraces(endpoint filter) error: %v", err)
+	}
+	if len(endpointFilter.Items) != 2 {
+		t.Fatalf("endpoint filter item count=%d, want 2", len(endpointFilter.Items))
+	}
+	if endpointFilter.Items[0].ID != "trace-c" || endpointFilter.Items[1].ID != "trace-a" {
+		t.Fatalf("endpoint filter returned unexpected order/items: %#v", endpointFilter.Items)
+	}
+
 	groupFilter, err := store.QueryTraces(context.Background(), TraceFilter{
 		TraceGroupID: "group-1",
 	})

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -334,10 +335,11 @@ func TestRouterServesTracesListAndDetail(t *testing.T) {
 	}
 
 	handler := NewRouter(RouterOptions{
-		AppVersion:    "dev",
-		Store:         store,
-		StorageDriver: "sqlite",
-		StoragePath:   "./data/ongoingai.db",
+		AppVersion:       "dev",
+		Store:            store,
+		StorageDriver:    "sqlite",
+		StoragePath:      "./data/ongoingai.db",
+		ProviderPrefixes: []string{"/openai"},
 	})
 
 	listReq := httptest.NewRequest(
@@ -383,6 +385,9 @@ func TestRouterServesTracesListAndDetail(t *testing.T) {
 	if _, ok := first["llm_response_content"]; ok {
 		t.Fatalf("list item unexpectedly included llm_response_content: %v", first)
 	}
+	if first["endpoint"] != "/v1/chat/completions" {
+		t.Fatalf("endpoint=%v, want stripped endpoint", first["endpoint"])
+	}
 
 	detailReq := httptest.NewRequest(http.MethodGet, "/api/traces/trace-1", nil)
 	detailReq = detailReq.WithContext(auth.WithIdentity(detailReq.Context(), &auth.Identity{
@@ -402,6 +407,9 @@ func TestRouterServesTracesListAndDetail(t *testing.T) {
 	}
 	if detailBody["id"] != "trace-1" || detailBody["provider"] != "openai" {
 		t.Fatalf("unexpected detail response=%v", detailBody)
+	}
+	if detailBody["endpoint"] != "/v1/chat/completions" {
+		t.Fatalf("detail endpoint=%v, want stripped endpoint", detailBody["endpoint"])
 	}
 	lineage, ok := detailBody["lineage"].(map[string]any)
 	if !ok {
@@ -440,6 +448,73 @@ func TestRouterServesTracesListAndDetail(t *testing.T) {
 	handler.ServeHTTP(deniedRec, deniedReq)
 	if deniedRec.Code != http.StatusNotFound {
 		t.Fatalf("tenant-mismatched detail status=%d, want 404", deniedRec.Code)
+	}
+}
+
+func TestRouterServesDashboard(t *testing.T) {
+	t.Parallel()
+
+	handler := NewRouter(RouterOptions{AppVersion: "dev", DashboardEnabled: true})
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dashboard status=%d, want 200", rec.Code)
+	}
+	if contentType := rec.Header().Get("Content-Type"); !strings.Contains(contentType, "text/html") {
+		t.Fatalf("content type=%q, want text/html", contentType)
+	}
+	if !strings.Contains(rec.Body.String(), "Trace Dashboard") {
+		t.Fatal("dashboard body missing title")
+	}
+
+	postReq := httptest.NewRequest(http.MethodPost, "/dashboard", nil)
+	postRec := httptest.NewRecorder()
+	handler.ServeHTTP(postRec, postReq)
+	if postRec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("dashboard post status=%d, want 405", postRec.Code)
+	}
+}
+
+func TestRouterDashboardDisabledByDefault(t *testing.T) {
+	t.Parallel()
+
+	handler := NewRouter(RouterOptions{AppVersion: "dev"})
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("dashboard status=%d, want 404 when disabled", rec.Code)
+	}
+}
+
+func TestRouterTraceEndpointFilterNormalizesProviderPrefix(t *testing.T) {
+	t.Parallel()
+
+	store := &stubStore{}
+	handler := NewRouter(RouterOptions{
+		AppVersion:       "dev",
+		Store:            store,
+		ProviderPrefixes: []string{"/llmgateway"},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/traces?endpoint=v1/responses&api_key=plaintext&api_key_hash=hash-a", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200", rec.Code)
+	}
+	want := []string{"/v1/responses", "/llmgateway/v1/responses"}
+	if !reflect.DeepEqual(store.lastTraceFilter.EndpointPaths, want) {
+		t.Fatalf("endpoint paths=%v, want %v", store.lastTraceFilter.EndpointPaths, want)
+	}
+	if store.lastTraceFilter.APIKeyHash != "hash-a" {
+		t.Fatalf("api key hash=%q, want hash-a", store.lastTraceFilter.APIKeyHash)
 	}
 }
 

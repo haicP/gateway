@@ -218,6 +218,9 @@ tracing:
     cleanup_daily_at: "02:00"
     cleanup_timezone: Local
 
+dashboard:
+  enabled: false                # Serve /dashboard; enable on one instance in multi-instance setups
+
 backup:
   request_details:
     enabled: false

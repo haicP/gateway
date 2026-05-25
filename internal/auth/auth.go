@@ -167,6 +167,7 @@ func (a *Authorizer) Authenticate(r *http.Request) (*Identity, error) {
 type MiddlewareOptions struct {
 	APIPrefix          string
 	Providers          []ProviderRoute
+	DashboardEnabled   bool
 	ProxyLimiter       ProxyLimiter
 	ProxyUsageRecorder ProxyUsageRecorder
 	AuditRecorder      AuditRecorder
@@ -233,9 +234,10 @@ func middlewareWithResolver(resolver AuthorizerResolver, options MiddlewareOptio
 		apiPrefix = "/api"
 	}
 	providerRoutes := normalizeProviderRoutes(options.Providers)
+	dashboardEnabled := options.DashboardEnabled
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		decision := requiredAccess(r.Method, r.URL.Path, apiPrefix, providerRoutes)
+		decision := requiredAccess(r.Method, r.URL.Path, apiPrefix, providerRoutes, dashboardEnabled)
 		if decision.mode == accessModeBypass {
 			next.ServeHTTP(w, r)
 			return
@@ -354,10 +356,10 @@ type accessDecision struct {
 	denyReason     string
 }
 
-func requiredAccess(method, path, apiPrefix string, providerRoutes []ProviderRoute) accessDecision {
+func requiredAccess(method, path, apiPrefix string, providerRoutes []ProviderRoute, dashboardEnabled bool) accessDecision {
 	method = strings.ToUpper(strings.TrimSpace(method))
 
-	if isPreflight(method) && (pathutil.HasPathPrefix(path, apiPrefix) || matchesProviderRoute(path, providerRoutes).Name != "") {
+	if isPreflight(method) && (pathutil.HasPathPrefix(path, apiPrefix) || (dashboardEnabled && pathutil.HasPathPrefix(path, "/dashboard")) || matchesProviderRoute(path, providerRoutes).Name != "") {
 		return accessDecision{mode: accessModeBypass}
 	}
 
@@ -373,6 +375,14 @@ func requiredAccess(method, path, apiPrefix string, providerRoutes []ProviderRou
 	}
 
 	switch {
+	case dashboardEnabled && path == "/dashboard" && isReadMethod(method):
+		return accessDecision{
+			mode:           accessModeRequirePermission,
+			resource:       "dashboard",
+			resourceAction: "read",
+			scope:          "workspace",
+			permission:     PermissionAnalyticsRead,
+		}
 	case pathutil.HasPathPrefix(path, apiPrefix):
 		switch {
 		case path == apiPrefix+"/health" && isReadMethod(method):
@@ -523,6 +533,14 @@ func AuthorizationMatrix() []AuthorizationRule {
 			Scope:      "workspace",
 			Methods:    []string{http.MethodGet, http.MethodHead},
 			Path:       "/api/analytics/*",
+			Permission: PermissionAnalyticsRead,
+		},
+		{
+			Resource:   "dashboard",
+			Action:     "read",
+			Scope:      "workspace",
+			Methods:    []string{http.MethodGet, http.MethodHead},
+			Path:       "/dashboard",
 			Permission: PermissionAnalyticsRead,
 		},
 		{

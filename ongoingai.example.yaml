@@ -28,6 +28,11 @@ tracing:
     cleanup_daily_at: "02:00"
     cleanup_timezone: Local
 
+# Lightweight local dashboard. In multi-instance deployments, enable this on
+# only one instance or expose it behind a dedicated authenticated route.
+dashboard:
+  enabled: false
+
 # Optional request detail backup to S3-compatible object storage.
 backup:
   request_details:

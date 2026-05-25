@@ -39,6 +39,9 @@ tracing:
     cleanup_daily_at: "02:00"
     cleanup_timezone: Local
 
+dashboard:
+  enabled: false
+
 backup:
   request_details:
     enabled: false
@@ -77,6 +80,12 @@ backup:
 ## Providers
 
 `providers` is a map of provider names to reverse-proxy routes.
+
+## Dashboard
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `dashboard.enabled` | `false` | Serve the local trace dashboard at `/dashboard`. For multi-instance deployments, enable it on only the instance intended to expose the panel. |
 
 | Field | Description |
 | --- | --- |

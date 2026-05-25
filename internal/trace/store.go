@@ -39,21 +39,22 @@ type TraceExporter interface {
 }
 
 type TraceFilter struct {
-	OrgID        string
-	WorkspaceID  string
-	TraceGroupID string
-	ThreadID     string
-	RunID        string
-	Provider     string
-	Model        string
-	APIKeyHash   string
-	StatusCode   int
-	MinTokens    int
-	MaxTokens    int
-	From         time.Time
-	To           time.Time
-	Limit        int
-	Cursor       string
+	OrgID         string
+	WorkspaceID   string
+	TraceGroupID  string
+	ThreadID      string
+	RunID         string
+	Provider      string
+	Model         string
+	EndpointPaths []string
+	APIKeyHash    string
+	StatusCode    int
+	MinTokens     int
+	MaxTokens     int
+	From          time.Time
+	To            time.Time
+	Limit         int
+	Cursor        string
 }
 
 // TraceExportFilter selects a stable, forward-only page of traces for export.

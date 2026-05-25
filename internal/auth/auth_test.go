@@ -290,8 +290,9 @@ func TestMiddlewareRejectsMissingProviderCredential(t *testing.T) {
 	}
 
 	handler := Middleware(authorizer, MiddlewareOptions{
-		APIPrefix: "/api",
-		Providers: testProviderRoutes(),
+		APIPrefix:        "/api",
+		Providers:        testProviderRoutes(),
+		DashboardEnabled: true,
 	}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -481,6 +482,14 @@ func TestMiddlewareAllowsAPIReadForViewerAndHealthWithoutAuth(t *testing.T) {
 		t.Fatalf("diagnostics status=%d, want %d", diagnosticsRec.Code, http.StatusOK)
 	}
 
+	dashboardReq := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+	dashboardReq.Header.Set("X-OngoingAI-Gateway-Key", "viewer-token")
+	dashboardRec := httptest.NewRecorder()
+	handler.ServeHTTP(dashboardRec, dashboardReq)
+	if dashboardRec.Code != http.StatusOK {
+		t.Fatalf("dashboard status=%d, want %d", dashboardRec.Code, http.StatusOK)
+	}
+
 	keysReq := httptest.NewRequest(http.MethodGet, "/api/gateway-keys", nil)
 	keysReq.Header.Set("X-OngoingAI-Gateway-Key", "viewer-token")
 	keysRec := httptest.NewRecorder()
@@ -494,6 +503,46 @@ func TestMiddlewareAllowsAPIReadForViewerAndHealthWithoutAuth(t *testing.T) {
 	handler.ServeHTTP(healthRec, healthReq)
 	if healthRec.Code != http.StatusOK {
 		t.Fatalf("health status=%d, want %d", healthRec.Code, http.StatusOK)
+	}
+
+	unauthDashboardReq := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+	unauthDashboardRec := httptest.NewRecorder()
+	handler.ServeHTTP(unauthDashboardRec, unauthDashboardReq)
+	if unauthDashboardRec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated dashboard status=%d, want %d", unauthDashboardRec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestMiddlewareBypassesDashboardWhenDisabled(t *testing.T) {
+	t.Parallel()
+
+	authorizer, err := NewAuthorizer(Options{
+		Enabled: true,
+		Keys: []KeyConfig{
+			{
+				ID:    "team-a-viewer-1",
+				Token: "viewer-token",
+				Role:  "viewer",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAuthorizer() error: %v", err)
+	}
+
+	handler := Middleware(authorizer, MiddlewareOptions{
+		APIPrefix: "/api",
+		Providers: testProviderRoutes(),
+	}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("dashboard status=%d, want downstream 404 when disabled", rec.Code)
 	}
 }
 

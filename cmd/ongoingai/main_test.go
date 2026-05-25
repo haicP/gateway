@@ -23,6 +23,7 @@ func TestShouldCaptureTrace(t *testing.T) {
 	}{
 		{path: "/api/health", want: false},
 		{path: "/api/traces", want: false},
+		{path: "/dashboard", want: false},
 		{path: "/api", want: false},
 		{path: "/apiish", want: true},
 		{path: "/llm/v1/chat/completions", want: true},

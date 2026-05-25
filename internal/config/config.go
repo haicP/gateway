@@ -20,6 +20,7 @@ type Config struct {
 	Storage   StorageConfig   `yaml:"storage"`
 	Providers ProvidersConfig `yaml:"providers"`
 	Tracing   TracingConfig   `yaml:"tracing"`
+	Dashboard DashboardConfig `yaml:"dashboard"`
 	Backup    BackupConfig    `yaml:"backup"`
 }
 
@@ -91,6 +92,10 @@ type TraceRetentionConfig struct {
 	CleanupTimezone string `yaml:"cleanup_timezone"`
 }
 
+type DashboardConfig struct {
+	Enabled bool `yaml:"enabled"`
+}
+
 type BackupConfig struct {
 	RequestDetails BackupRequestDetailsConfig `yaml:"request_details"`
 }
@@ -145,6 +150,9 @@ func Default() Config {
 				CleanupDailyAt:  "02:00",
 				CleanupTimezone: "Local",
 			},
+		},
+		Dashboard: DashboardConfig{
+			Enabled: false,
 		},
 		Backup: BackupConfig{
 			RequestDetails: BackupRequestDetailsConfig{
@@ -437,6 +445,13 @@ func applyEnv(cfg *Config) error {
 	}
 	if cleanupTimezone := os.Getenv("ONGOINGAI_TRACE_CLEANUP_TIMEZONE"); cleanupTimezone != "" {
 		cfg.Tracing.Retention.CleanupTimezone = cleanupTimezone
+	}
+	if dashboardEnabled := os.Getenv("ONGOINGAI_DASHBOARD_ENABLED"); dashboardEnabled != "" {
+		v, err := strconv.ParseBool(dashboardEnabled)
+		if err != nil {
+			return fmt.Errorf("invalid ONGOINGAI_DASHBOARD_ENABLED: %w", err)
+		}
+		cfg.Dashboard.Enabled = v
 	}
 	return applyBackupEnv(cfg)
 }

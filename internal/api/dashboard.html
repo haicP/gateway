@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Trace Dashboard</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f3f8f8;
+      --panel: #ffffff;
+      --line: #e5e7eb;
+      --muted: #64748b;
+      --text: #111827;
+      --soft: #f8fafc;
+      --teal: #0f766e;
+      --teal-strong: #0d9488;
+      --blue-soft: #dbeafe;
+      --blue: #1d4ed8;
+      --green: #039855;
+      --red: #dc2626;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+    }
+
+    .page {
+      width: 100%;
+      padding: 24px;
+    }
+
+    .filters {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(140px, 1fr)) auto;
+      gap: 16px;
+      align-items: end;
+      padding: 22px 30px;
+      background: var(--panel);
+      border: 1px solid rgba(15, 23, 42, 0.08);
+      border-radius: 8px;
+      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+    }
+
+    .field {
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    label {
+      font-weight: 700;
+      color: #334155;
+      letter-spacing: 0;
+    }
+
+    input, select, button {
+      height: 44px;
+      border: 1px solid #d9dee7;
+      border-radius: 8px;
+      background: #fff;
+      color: #1f2937;
+      padding: 0 14px;
+      font: inherit;
+      outline: none;
+    }
+
+    input:focus, select:focus {
+      border-color: var(--teal-strong);
+      box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.12);
+    }
+
+    .actions {
+      display: flex;
+      gap: 12px;
+      justify-content: flex-end;
+      white-space: nowrap;
+    }
+
+    button {
+      cursor: pointer;
+      font-weight: 700;
+      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+    }
+
+    .primary {
+      border-color: var(--teal-strong);
+      background: var(--teal-strong);
+      color: #fff;
+      box-shadow: 0 8px 18px rgba(13, 148, 136, 0.24);
+    }
+
+    .table-shell {
+      margin-top: 30px;
+      background: var(--panel);
+      border: 1px solid rgba(15, 23, 42, 0.08);
+      border-radius: 8px;
+      overflow: auto;
+      box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
+      max-height: calc(100vh - 210px);
+    }
+
+    table {
+      width: 100%;
+      min-width: 1500px;
+      border-collapse: separate;
+      border-spacing: 0;
+    }
+
+    th, td {
+      padding: 18px 24px;
+      border-bottom: 1px solid #edf0f4;
+      text-align: left;
+      vertical-align: middle;
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: #f9fafb;
+      color: #475569;
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    td {
+      color: #475569;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .strong {
+      color: #111827;
+      font-weight: 700;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      height: 22px;
+      padding: 0 9px;
+      border-radius: 5px;
+      background: var(--blue-soft);
+      color: var(--blue);
+      font-weight: 700;
+      font-size: 12px;
+    }
+
+    .ok { color: var(--green); font-weight: 700; }
+    .bad { color: var(--red); font-weight: 700; }
+    .muted { color: var(--muted); }
+    .cost { color: var(--green); font-variant-numeric: tabular-nums; }
+    .tokens { color: #111827; font-variant-numeric: tabular-nums; }
+
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      margin-top: 30px;
+      padding: 16px 30px;
+      background: rgba(255, 255, 255, 0.8);
+      border-top: 1px solid var(--line);
+    }
+
+    .pager {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .pager button {
+      min-width: 44px;
+      padding: 0 12px;
+    }
+
+    .empty {
+      padding: 48px;
+      text-align: center;
+      color: var(--muted);
+    }
+
+    @media (max-width: 1100px) {
+      .filters {
+        grid-template-columns: repeat(2, minmax(160px, 1fr));
+      }
+      .actions {
+        justify-content: flex-start;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .page { padding: 14px; }
+      .filters { grid-template-columns: 1fr; padding: 18px; }
+      .footer { align-items: flex-start; flex-direction: column; padding: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="filters" aria-label="Trace filters">
+      <div class="field">
+        <label for="apiKey">API 密钥</label>
+        <input id="apiKey" type="password" autocomplete="off" placeholder="输入明文后本地 hash">
+      </div>
+      <div class="field">
+        <label for="range">时间范围</label>
+        <select id="range">
+          <option value="7d">近 7 天</option>
+          <option value="1d">近 1 天</option>
+          <option value="30d">近 30 天</option>
+          <option value="custom">自定义</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="model">模型</label>
+        <input id="model" list="modelOptions" placeholder="全部模型">
+        <datalist id="modelOptions"></datalist>
+      </div>
+      <div class="field">
+        <label for="endpoint">端点</label>
+        <input id="endpoint" placeholder="/v1/responses">
+      </div>
+      <div class="field">
+        <label for="status">状态</label>
+        <input id="status" inputmode="numeric" pattern="[0-9]*" placeholder="全部状态">
+      </div>
+      <div class="actions">
+        <button id="refresh" type="button">刷新</button>
+        <button id="reset" type="button">重置</button>
+        <button id="exportCsv" class="primary" type="button">导出 CSV</button>
+      </div>
+      <div class="field custom-time" hidden>
+        <label for="from">开始时间</label>
+        <input id="from" type="datetime-local">
+      </div>
+      <div class="field custom-time" hidden>
+        <label for="to">结束时间</label>
+        <input id="to" type="datetime-local">
+      </div>
+    </section>
+
+    <section class="table-shell" aria-label="Trace table">
+      <table>
+        <thead>
+          <tr>
+            <th>API 密钥</th>
+            <th>模型</th>
+            <th>端点</th>
+            <th>状态</th>
+            <th>Token</th>
+            <th>费用</th>
+            <th>首 Token</th>
+            <th>耗时</th>
+            <th>时间</th>
+            <th>User-Agent</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div id="empty" class="empty" hidden>暂无结果</div>
+    </section>
+
+    <footer class="footer">
+      <div id="summary" class="muted">显示 0 条结果</div>
+      <div class="pager">
+        <label for="limit" class="muted">每页</label>
+        <select id="limit">
+          <option>25</option>
+          <option selected>50</option>
+          <option>100</option>
+          <option>200</option>
+        </select>
+        <button id="prev" type="button">上一页</button>
+        <button id="next" type="button">下一页</button>
+      </div>
+    </footer>
+  </main>
+
+  <script>
+    const state = {
+      items: [],
+      cursorStack: [''],
+      pageIndex: 0,
+      nextCursor: '',
+      loading: false,
+    };
+
+    const $ = (id) => document.getElementById(id);
+    const rows = $('rows');
+    const empty = $('empty');
+    const customTimeFields = Array.from(document.querySelectorAll('.custom-time'));
+
+    $('range').addEventListener('change', () => {
+      const custom = $('range').value === 'custom';
+      customTimeFields.forEach((node) => { node.hidden = !custom; });
+    });
+    $('refresh').addEventListener('click', () => loadFirstPage());
+    $('reset').addEventListener('click', resetFilters);
+    $('exportCsv').addEventListener('click', exportCSV);
+    $('prev').addEventListener('click', () => loadPage(state.pageIndex - 1));
+    $('next').addEventListener('click', () => {
+      if (!state.nextCursor) return;
+      state.cursorStack[state.pageIndex + 1] = state.nextCursor;
+      loadPage(state.pageIndex + 1);
+    });
+    $('limit').addEventListener('change', () => loadFirstPage());
+
+    function resetFilters() {
+      $('apiKey').value = '';
+      $('range').value = '7d';
+      $('model').value = '';
+      $('endpoint').value = '';
+      $('status').value = '';
+      $('from').value = '';
+      $('to').value = '';
+      customTimeFields.forEach((node) => { node.hidden = true; });
+      loadFirstPage();
+    }
+
+    async function loadFirstPage() {
+      state.cursorStack = [''];
+      await loadPage(0);
+    }
+
+    async function loadPage(index) {
+      if (index < 0 || state.loading) return;
+      state.loading = true;
+      setButtons();
+      try {
+        const params = await buildParams();
+        const cursor = state.cursorStack[index] || '';
+        if (cursor) params.set('cursor', cursor);
+        const res = await fetch('/api/traces?' + params.toString(), {
+          headers: { 'Accept': 'application/json' },
+        });
+        if (!res.ok) throw new Error(await errorMessage(res));
+        const payload = await res.json();
+        state.items = Array.isArray(payload.items) ? payload.items : [];
+        state.nextCursor = payload.next_cursor || '';
+        state.pageIndex = index;
+        render();
+      } catch (err) {
+        rows.innerHTML = '';
+        empty.hidden = false;
+        empty.textContent = err.message || '加载失败';
+        $('summary').textContent = '加载失败';
+      } finally {
+        state.loading = false;
+        setButtons();
+      }
+    }
+
+    async function buildParams() {
+      const params = new URLSearchParams();
+      params.set('limit', $('limit').value);
+      const model = $('model').value.trim();
+      const endpoint = $('endpoint').value.trim();
+      const status = $('status').value.trim();
+      if (model) params.set('model', model);
+      if (endpoint) params.set('endpoint', endpoint);
+      if (status) params.set('status', status);
+      const key = $('apiKey').value.trim();
+      if (key) params.set('api_key_hash', await sha256Hex(key));
+
+      const range = $('range').value;
+      const now = new Date();
+      if (range === 'custom') {
+        if ($('from').value) params.set('from', new Date($('from').value).toISOString());
+        if ($('to').value) params.set('to', new Date($('to').value).toISOString());
+      } else {
+        const days = range === '1d' ? 1 : range === '30d' ? 30 : 7;
+        params.set('from', new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString());
+        params.set('to', now.toISOString());
+      }
+      return params;
+    }
+
+    async function sha256Hex(value) {
+      const data = new TextEncoder().encode(value);
+      const digest = await crypto.subtle.digest('SHA-256', data);
+      return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    async function errorMessage(res) {
+      try {
+        const payload = await res.json();
+        return payload.error || res.statusText;
+      } catch (_) {
+        return res.statusText;
+      }
+    }
+
+    function render() {
+      rows.innerHTML = '';
+      const models = new Set();
+      for (const item of state.items) {
+        if (item.model) models.add(item.model);
+        const tr = document.createElement('tr');
+        tr.innerHTML = [
+          td(shortHash(item.api_key_hash) || '<span class="muted">-</span>'),
+          td(escapeHTML(item.model || 'unknown'), 'strong'),
+          td(escapeHTML(item.endpoint || item.request_path || '/')),
+          td(statusHTML(item.response_status)),
+          td(tokenHTML(item)),
+          td('$' + Number(item.estimated_cost_usd || 0).toFixed(6), 'cost'),
+          td(formatSeconds(item.time_to_first_token_ms)),
+          td(formatSeconds(item.latency_ms)),
+          td(formatDate(item.timestamp)),
+          td(escapeHTML(item.user_agent || '-')),
+        ].join('');
+        rows.appendChild(tr);
+      }
+      syncModelOptions(models);
+      empty.hidden = state.items.length !== 0;
+      empty.textContent = '暂无结果';
+      const start = state.items.length === 0 ? 0 : state.pageIndex * Number($('limit').value) + 1;
+      const end = start + state.items.length - 1;
+      $('summary').textContent = state.items.length ? `显示 ${start} 至 ${end} 条结果` : '显示 0 条结果';
+    }
+
+    function td(content, className = '') {
+      return `<td${className ? ` class="${className}"` : ''}>${content}</td>`;
+    }
+
+    function statusHTML(status) {
+      const cls = status >= 200 && status < 400 ? 'ok' : 'bad';
+      return `<span class="${cls}">${status || '-'}</span>`;
+    }
+
+    function tokenHTML(item) {
+      const input = Number(item.input_tokens || 0).toLocaleString();
+      const output = Number(item.output_tokens || 0).toLocaleString();
+      const total = Number(item.total_tokens || 0).toLocaleString();
+      return `<div class="tokens">↓ ${input} &nbsp; ↑ ${output}</div><div class="muted">总 ${total}</div>`;
+    }
+
+    function shortHash(hash) {
+      if (!hash) return '';
+      return `<span title="${escapeHTML(hash)}">${escapeHTML(hash.slice(0, 10))}</span>`;
+    }
+
+    function formatSeconds(ms) {
+      const value = Number(ms || 0);
+      if (!value) return '-';
+      return (value / 1000).toFixed(value >= 10000 ? 2 : 2) + 's';
+    }
+
+    function formatDate(value) {
+      if (!value) return '-';
+      const date = new Date(value);
+      return date.toLocaleString('zh-CN', { hour12: false });
+    }
+
+    function escapeHTML(value) {
+      return String(value).replace(/[&<>"']/g, (ch) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      }[ch]));
+    }
+
+    function syncModelOptions(models) {
+      const datalist = $('modelOptions');
+      const existing = new Set(Array.from(datalist.children).map((node) => node.value));
+      for (const model of models) {
+        if (existing.has(model)) continue;
+        const option = document.createElement('option');
+        option.value = model;
+        datalist.appendChild(option);
+      }
+    }
+
+    function setButtons() {
+      $('prev').disabled = state.loading || state.pageIndex === 0;
+      $('next').disabled = state.loading || !state.nextCursor;
+      $('refresh').disabled = state.loading;
+    }
+
+    function exportCSV() {
+      const headers = ['api_key_hash', 'model', 'endpoint', 'status', 'input_tokens', 'output_tokens', 'total_tokens', 'cost_usd', 'ttft_ms', 'latency_ms', 'timestamp', 'user_agent'];
+      const lines = [headers.join(',')];
+      for (const item of state.items) {
+        lines.push([
+          item.api_key_hash || '',
+          item.model || '',
+          item.endpoint || item.request_path || '',
+          item.response_status || '',
+          item.input_tokens || 0,
+          item.output_tokens || 0,
+          item.total_tokens || 0,
+          item.estimated_cost_usd || 0,
+          item.time_to_first_token_ms || 0,
+          item.latency_ms || 0,
+          item.timestamp || '',
+          item.user_agent || '',
+        ].map(csvCell).join(','));
+      }
+      const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'traces.csv';
+      link.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function csvCell(value) {
+      const text = String(value);
+      if (!/[",\n]/.test(text)) return text;
+      return '"' + text.replaceAll('"', '""') + '"';
+    }
+
+    loadFirstPage();
+  </script>
+</body>
+</html>

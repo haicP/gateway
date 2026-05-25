@@ -26,6 +26,10 @@ tracing:
     cleanup_daily_at: "02:00"
     cleanup_timezone: Local
 
+# 面板入口。多实例部署时建议只在一个实例开启。
+dashboard:
+  enabled: true
+
 # 请求详情备份。开启后按日导出 trace/request/response 详情到 S3 兼容对象存储。
 backup:
   request_details:

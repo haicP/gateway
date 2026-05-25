@@ -79,6 +79,9 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	if cfg.Server.Address() != "0.0.0.0:8080" {
 		t.Fatalf("server address=%q, want 0.0.0.0:8080", cfg.Server.Address())
 	}
+	if cfg.Dashboard.Enabled {
+		t.Fatalf("dashboard.enabled=%v, want false by default", cfg.Dashboard.Enabled)
+	}
 }
 
 func TestLoadAppliesYAMLAndEnvOverrides(t *testing.T) {
@@ -101,6 +104,8 @@ tracing:
     cleanup_enabled: false
     cleanup_daily_at: "05:45"
     cleanup_timezone: UTC
+dashboard:
+  enabled: true
 observability:
   otel:
     enabled: false
@@ -197,6 +202,9 @@ backup:
 	}
 	if cfg.Providers["llm"].Prefix != "/llm" {
 		t.Fatalf("llm.prefix=%q, want yaml value", cfg.Providers["llm"].Prefix)
+	}
+	if !cfg.Dashboard.Enabled {
+		t.Fatalf("dashboard.enabled=%v, want true from yaml", cfg.Dashboard.Enabled)
 	}
 	if !cfg.Observability.OTel.Enabled {
 		t.Fatalf("observability.otel.enabled=%v, want true (env override)", cfg.Observability.OTel.Enabled)
