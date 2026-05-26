@@ -221,6 +221,10 @@ tracing:
 dashboard:
   enabled: false                # Serve /dashboard; enable on one instance in multi-instance setups
 
+logging:
+  dir: ./data/logs              # Runtime JSON logs; Docker default resolves to /app/data/logs
+  stdout: false                 # Set true to also mirror runtime logs to stdout
+
 backup:
   request_details:
     enabled: false

@@ -42,6 +42,10 @@ tracing:
 dashboard:
   enabled: false
 
+logging:
+  dir: ./data/logs
+  stdout: false
+
 backup:
   request_details:
     enabled: false
@@ -81,12 +85,6 @@ backup:
 
 `providers` is a map of provider names to reverse-proxy routes.
 
-## Dashboard
-
-| Field | Default | Description |
-| --- | --- | --- |
-| `dashboard.enabled` | `false` | Serve the local trace dashboard at `/dashboard`. For multi-instance deployments, enable it on only the instance intended to expose the panel. |
-
 | Field | Description |
 | --- | --- |
 | `providers.<name>.upstream` | Upstream base URL with scheme and host |
@@ -95,6 +93,19 @@ backup:
 Provider names must use lowercase letters, numbers, hyphen, or underscore.
 Prefixes must start with `/`, must not be `/`, must not overlap `/api`, and
 must not overlap each other.
+
+## Dashboard
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `dashboard.enabled` | `false` | Serve the local trace dashboard at `/dashboard`. For multi-instance deployments, enable it on only the instance intended to expose the panel. |
+
+## Logging
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `logging.dir` | `./data/logs` | Directory for structured runtime JSON log files. In the Docker image this resolves to `/app/data/logs`. |
+| `logging.stdout` | `false` | Also mirror runtime logs to stdout. Startup config load and validation failures still go to stderr before logging initializes. |
 
 ## Tracing
 
@@ -136,6 +147,7 @@ S3-compatible object storage.
 - `server.port` must be between `1` and `65535`.
 - SQLite requires `storage.path`.
 - Postgres requires `storage.dsn`.
+- `logging.dir` must be non-empty.
 - Backup enabled requires an S3 bucket, valid timezone, valid `daily_at`,
   non-empty temp dir, positive page/shard/retry values, and valid endpoint URL
   when set.

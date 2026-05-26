@@ -21,6 +21,7 @@ type Config struct {
 	Providers ProvidersConfig `yaml:"providers"`
 	Tracing   TracingConfig   `yaml:"tracing"`
 	Dashboard DashboardConfig `yaml:"dashboard"`
+	Logging   LoggingConfig   `yaml:"logging"`
 	Backup    BackupConfig    `yaml:"backup"`
 }
 
@@ -96,6 +97,11 @@ type DashboardConfig struct {
 	Enabled bool `yaml:"enabled"`
 }
 
+type LoggingConfig struct {
+	Dir    string `yaml:"dir"`
+	Stdout bool   `yaml:"stdout"`
+}
+
 type BackupConfig struct {
 	RequestDetails BackupRequestDetailsConfig `yaml:"request_details"`
 }
@@ -153,6 +159,10 @@ func Default() Config {
 		},
 		Dashboard: DashboardConfig{
 			Enabled: false,
+		},
+		Logging: LoggingConfig{
+			Dir:    "./data/logs",
+			Stdout: false,
 		},
 		Backup: BackupConfig{
 			RequestDetails: BackupRequestDetailsConfig{
@@ -230,10 +240,20 @@ func Validate(cfg Config) error {
 	if _, err := validateProviders(cfg.Providers); err != nil {
 		return err
 	}
+	if err := validateLoggingConfig(cfg.Logging); err != nil {
+		return err
+	}
 	if err := validateTraceRetentionConfig(cfg.Tracing.Retention); err != nil {
 		return err
 	}
 	return validateBackupRequestDetailsConfig(cfg.Backup.RequestDetails)
+}
+
+func validateLoggingConfig(cfg LoggingConfig) error {
+	if strings.TrimSpace(cfg.Dir) == "" {
+		return errors.New("logging.dir is required")
+	}
+	return nil
 }
 
 func validateTraceRetentionConfig(cfg TraceRetentionConfig) error {
@@ -452,6 +472,16 @@ func applyEnv(cfg *Config) error {
 			return fmt.Errorf("invalid ONGOINGAI_DASHBOARD_ENABLED: %w", err)
 		}
 		cfg.Dashboard.Enabled = v
+	}
+	if logDir := os.Getenv("ONGOINGAI_LOG_DIR"); logDir != "" {
+		cfg.Logging.Dir = logDir
+	}
+	if logStdout := os.Getenv("ONGOINGAI_LOG_STDOUT"); logStdout != "" {
+		v, err := strconv.ParseBool(logStdout)
+		if err != nil {
+			return fmt.Errorf("invalid ONGOINGAI_LOG_STDOUT: %w", err)
+		}
+		cfg.Logging.Stdout = v
 	}
 	return applyBackupEnv(cfg)
 }

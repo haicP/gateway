@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,6 +38,7 @@ const requestDetailsBackupSchedulerShutdownTimeout = 5 * time.Second
 const traceRetentionCleanupSchedulerShutdownTimeout = 5 * time.Second
 const serverReadHeaderTimeout = 10 * time.Second
 const serverIdleTimeout = 2 * time.Minute
+const logFileDateLayout = "2006-01-02"
 
 type asyncTraceWriter interface {
 	Start(ctx context.Context)
@@ -71,6 +73,7 @@ var newTraceRetentionCleanupScheduler = func(cfg config.TraceRetentionConfig, st
 }
 
 var signalNotifyContext = signal.NotifyContext
+var runServeStdout io.Writer = os.Stdout
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -221,7 +224,16 @@ func runServe(args []string) int {
 		return 1
 	}
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logger, closeLogger, err := newServeLogger(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to initialize logging: %v\n", err)
+		return 1
+	}
+	defer func() {
+		if err := closeLogger(); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to close logging: %v\n", err)
+		}
+	}()
 
 	var traceStore trace.TraceStore
 	var traceWriter asyncTraceWriter
@@ -403,6 +415,91 @@ func runServe(args []string) int {
 		}
 		return 0
 	}
+}
+
+type dailyLogFileWriter struct {
+	dir   string
+	clock func() time.Time
+
+	mu          sync.Mutex
+	currentDate string
+	file        *os.File
+}
+
+func newServeLogger(cfg config.Config) (*slog.Logger, func() error, error) {
+	fileWriter := &dailyLogFileWriter{
+		dir:   cfg.Logging.Dir,
+		clock: time.Now,
+	}
+	if err := os.MkdirAll(cfg.Logging.Dir, 0o755); err != nil {
+		return nil, nil, fmt.Errorf("create log directory %q: %w", cfg.Logging.Dir, err)
+	}
+	if err := fileWriter.rotateLocked(time.Now()); err != nil {
+		return nil, nil, err
+	}
+
+	var writer io.Writer = fileWriter
+	if cfg.Logging.Stdout {
+		writer = io.MultiWriter(fileWriter, runServeStdout)
+	}
+	logger := slog.New(slog.NewJSONHandler(writer, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	return logger, fileWriter.Close, nil
+}
+
+func (w *dailyLogFileWriter) Write(p []byte) (int, error) {
+	if w == nil {
+		return 0, errors.New("log file writer is nil")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	now := time.Now()
+	if w.clock != nil {
+		now = w.clock()
+	}
+	if err := w.rotateLocked(now); err != nil {
+		return 0, err
+	}
+	return w.file.Write(p)
+}
+
+func (w *dailyLogFileWriter) Close() error {
+	if w == nil {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.file == nil {
+		return nil
+	}
+	err := w.file.Close()
+	w.file = nil
+	w.currentDate = ""
+	return err
+}
+
+func (w *dailyLogFileWriter) rotateLocked(now time.Time) error {
+	date := now.Format(logFileDateLayout)
+	if w.file != nil && w.currentDate == date {
+		return nil
+	}
+
+	nextPath := filepath.Join(w.dir, "ongoingai-"+date+".log")
+	nextFile, err := os.OpenFile(nextPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("open log file %q: %w", nextPath, err)
+	}
+
+	previous := w.file
+	w.file = nextFile
+	w.currentDate = date
+	if previous != nil {
+		if err := previous.Close(); err != nil {
+			return fmt.Errorf("close rotated log file: %w", err)
+		}
+	}
+	return nil
 }
 
 func gatewayCommandEnv(cfg config.Config, baseEnv []string) []string {

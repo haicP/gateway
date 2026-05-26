@@ -30,6 +30,11 @@ tracing:
 dashboard:
   enabled: true
 
+# 结构化运行日志。Docker 内默认写入 /app/data/logs。
+logging:
+  dir: ./data/logs
+  stdout: false
+
 # 请求详情备份。开启后按日导出 trace/request/response 详情到 S3 兼容对象存储。
 backup:
   request_details:

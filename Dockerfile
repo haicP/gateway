@@ -21,7 +21,7 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
 	-trimpath \
 	-ldflags "-s -w -X github.com/ongoingai/gateway/internal/version.Version=${VERSION} -X github.com/ongoingai/gateway/internal/version.Commit=${COMMIT} -X github.com/ongoingai/gateway/internal/version.Date=${DATE}" \
 	-o /out/ongoingai ./cmd/ongoingai && \
-	mkdir -p /out/data /out/tmp && \
+	mkdir -p /out/data/logs /out/tmp && \
 	chmod 1777 /out/tmp
 
 FROM scratch

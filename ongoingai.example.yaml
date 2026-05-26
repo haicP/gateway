@@ -33,6 +33,12 @@ tracing:
 dashboard:
   enabled: false
 
+# Structured runtime logs. Docker images run from /app, so this default maps to
+# /app/data/logs when using the bundled container config.
+logging:
+  dir: ./data/logs
+  stdout: false
+
 # Optional request detail backup to S3-compatible object storage.
 backup:
   request_details:

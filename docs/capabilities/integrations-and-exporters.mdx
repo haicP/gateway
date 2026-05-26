@@ -17,10 +17,10 @@ It covers current export surfaces and practical pull-based integration patterns.
 ## Export surfaces
 
 - Exposes JSON API endpoints for health, traces, and analytics data.
-- Emits structured JSON logs to stdout for request lifecycle and audit events.
+- Emits structured JSON logs to `logging.dir` for request lifecycle and audit events.
   Logs include `trace_id` and `span_id` when an active span is in context,
   enabling direct log-to-trace correlation in Grafana Loki, Elasticsearch, or
-  any log backend.
+  any log backend. Set `logging.stdout: true` to also mirror logs to stdout.
 - Persists trace records to SQLite or Postgres for downstream reporting jobs.
 - Optionally exports gateway spans and metrics with native OpenTelemetry OTLP HTTP.
 - Exposes a native Prometheus `/metrics` scrape endpoint when
@@ -49,8 +49,8 @@ It covers current export surfaces and practical pull-based integration patterns.
 3. `/api/traces` supports filtered and cursor-based pull exports.
 4. `/api/analytics/*` exposes usage, cost, model, key, latency, error-rate, and
    summary aggregates.
-5. Gateway logs are emitted as JSON lines to stdout and can be shipped by your
-   log collector.
+5. Gateway logs are emitted as JSON lines in `logging.dir` and can be shipped
+   by your log collector.
 6. If `auth.enabled=true`, integration readers must use a gateway key with
    `analytics:read` for trace and analytics APIs.
 7. If `observability.otel.enabled=true`, the gateway emits OTLP HTTP spans and
@@ -59,7 +59,7 @@ It covers current export surfaces and practical pull-based integration patterns.
 ## Starter integration config
 
 No separate integration feature flag is required.
-You can integrate by reading HTTP APIs and shipping stdout logs.
+You can integrate by reading HTTP APIs and shipping log files.
 
 ```yaml filename="ongoingai.yaml"
 auth:
@@ -96,7 +96,7 @@ metadata fields without storing request and response payload bodies.
 - Incremental trace export:
   use `/api/traces?limit=200` with returned `next_cursor`.
 - SIEM integration:
-  ship JSON stdout logs and index `audit_action`, `audit_outcome`, and `path`.
+  ship JSON log files and index `audit_action`, `audit_outcome`, and `path`.
 - Multi-reader analytics workloads:
   use Postgres storage for shared query access patterns.
 
@@ -128,7 +128,7 @@ Placeholder:
 ### Filter audit-focused log lines from stdout
 
 ```bash filename="Terminal"
-ongoingai serve | jq -c 'select(.audit_action != null)'
+ONGOINGAI_LOG_STDOUT=true ongoingai serve | jq -c 'select(.audit_action != null)'
 ```
 
 This stream includes gateway auth deny and gateway key lifecycle audit events.
@@ -156,7 +156,8 @@ This stream includes gateway auth deny and gateway key lifecycle audit events.
 You should see:
 - JSON responses from all three endpoints.
 - Trace and summary data after proxied traffic.
-- Structured JSON log lines in gateway stdout.
+- Structured JSON log lines in the configured log directory, or in stdout when
+  `logging.stdout` is enabled.
 
 ## Troubleshooting
 
@@ -178,7 +179,8 @@ You should see:
 
 - Symptom: Log collector indexes gateway lines as unstructured text.
 - Cause: Collector parser is not configured for newline-delimited JSON.
-- Fix: Configure the collector source as JSON line input for gateway stdout.
+- Fix: Configure the collector source as JSON line input for gateway log files,
+  or enable `logging.stdout` when your collector reads process stdout.
 
 ### Prometheus `/metrics` returns 404
 

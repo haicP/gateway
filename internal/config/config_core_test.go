@@ -36,6 +36,12 @@ func TestLoadMissingFileUsesLightweightDefaults(t *testing.T) {
 	if cfg.Backup.RequestDetails.Enabled {
 		t.Fatalf("request detail backup enabled=%v, want false", cfg.Backup.RequestDetails.Enabled)
 	}
+	if cfg.Logging.Dir != "./data/logs" {
+		t.Fatalf("logging.dir=%q, want ./data/logs", cfg.Logging.Dir)
+	}
+	if cfg.Logging.Stdout {
+		t.Fatalf("logging.stdout=%v, want false", cfg.Logging.Stdout)
+	}
 }
 
 func TestLoadYAMLAndEnvForCoreGatewayConfig(t *testing.T) {
@@ -43,6 +49,8 @@ func TestLoadYAMLAndEnvForCoreGatewayConfig(t *testing.T) {
 	t.Setenv("ONGOINGAI_CAPTURE_BODIES", "true")
 	t.Setenv("ONGOINGAI_TRACE_RETENTION_DAYS", "30")
 	t.Setenv("ONGOINGAI_BACKUP_REQUEST_DETAILS_S3_BUCKET", "env-bucket")
+	t.Setenv("ONGOINGAI_LOG_DIR", "/tmp/env-logs")
+	t.Setenv("ONGOINGAI_LOG_STDOUT", "true")
 
 	path := filepath.Join(t.TempDir(), "ongoingai.yaml")
 	data := []byte(`
@@ -64,6 +72,9 @@ tracing:
     cleanup_enabled: true
     cleanup_daily_at: "03:30"
     cleanup_timezone: UTC
+logging:
+  dir: /tmp/yaml-logs
+  stdout: false
 backup:
   request_details:
     enabled: true
@@ -103,6 +114,12 @@ backup:
 	}
 	if cfg.Backup.RequestDetails.S3.Bucket != "env-bucket" {
 		t.Fatalf("backup bucket=%q, want env override", cfg.Backup.RequestDetails.S3.Bucket)
+	}
+	if cfg.Logging.Dir != "/tmp/env-logs" {
+		t.Fatalf("logging.dir=%q, want env override", cfg.Logging.Dir)
+	}
+	if !cfg.Logging.Stdout {
+		t.Fatalf("logging.stdout=%v, want env override true", cfg.Logging.Stdout)
 	}
 }
 
@@ -165,5 +182,19 @@ func TestValidateRejectsOverlappingProviderPrefixes(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "provider prefixes must not overlap") {
 		t.Fatalf("Validate() error=%v, want overlapping prefix error", err)
+	}
+}
+
+func TestValidateRequiresLoggingDir(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.Logging.Dir = " "
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("Validate() error=nil, want logging dir error")
+	}
+	if !strings.Contains(err.Error(), "logging.dir") {
+		t.Fatalf("Validate() error=%v, want logging.dir error", err)
 	}
 }

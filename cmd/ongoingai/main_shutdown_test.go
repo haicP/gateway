@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -103,7 +104,10 @@ providers:
 tracing:
   capture_bodies: false
   body_max_size: 1048576
-`, port, dbPath, upstream.URL, upstream.URL)
+logging:
+  dir: %q
+  stdout: false
+`, port, dbPath, upstream.URL, upstream.URL, filepath.Join(tmpDir, "logs"))
 	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -354,6 +358,111 @@ func TestRunServeStartsTraceRetentionCleanupWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestRunServeWritesStructuredLogsToDailyFile(t *testing.T) {
+	configPath, port, logDir := writeServeConfigWithLogging(t, false)
+
+	originalSignalNotifyContext := signalNotifyContext
+	originalStdout := runServeStdout
+	t.Cleanup(func() {
+		signalNotifyContext = originalSignalNotifyContext
+		runServeStdout = originalStdout
+	})
+
+	var stdout bytes.Buffer
+	runServeStdout = &stdout
+	shutdownCtx, shutdown := context.WithCancel(context.Background())
+	t.Cleanup(shutdown)
+	signalNotifyContext = func(_ context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
+		return shutdownCtx, func() {}
+	}
+
+	exitCodeCh := make(chan int, 1)
+	go func() {
+		exitCodeCh <- runServe([]string{"--config", configPath})
+	}()
+
+	waitForHTTPReady(t, fmt.Sprintf("http://127.0.0.1:%d/api/health", port))
+	shutdown()
+	assertRunServeExitCode(t, exitCodeCh)
+
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout log bytes=%d, want 0 when logging.stdout=false", stdout.Len())
+	}
+	body := readCurrentLogFile(t, logDir)
+	if !strings.Contains(body, `"msg":"startup banner"`) {
+		t.Fatalf("log file missing startup banner: %s", body)
+	}
+	if !strings.Contains(body, `"msg":"gateway stopped"`) {
+		t.Fatalf("log file missing shutdown log: %s", body)
+	}
+}
+
+func TestRunServeMirrorsLogsToStdoutWhenEnabled(t *testing.T) {
+	configPath, port, logDir := writeServeConfigWithLogging(t, true)
+
+	originalSignalNotifyContext := signalNotifyContext
+	originalStdout := runServeStdout
+	t.Cleanup(func() {
+		signalNotifyContext = originalSignalNotifyContext
+		runServeStdout = originalStdout
+	})
+
+	var stdout bytes.Buffer
+	runServeStdout = &stdout
+	shutdownCtx, shutdown := context.WithCancel(context.Background())
+	t.Cleanup(shutdown)
+	signalNotifyContext = func(_ context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
+		return shutdownCtx, func() {}
+	}
+
+	exitCodeCh := make(chan int, 1)
+	go func() {
+		exitCodeCh <- runServe([]string{"--config", configPath})
+	}()
+
+	waitForHTTPReady(t, fmt.Sprintf("http://127.0.0.1:%d/api/health", port))
+	shutdown()
+	assertRunServeExitCode(t, exitCodeCh)
+
+	if !strings.Contains(stdout.String(), `"msg":"startup banner"`) {
+		t.Fatalf("stdout missing startup banner: %s", stdout.String())
+	}
+	if !strings.Contains(readCurrentLogFile(t, logDir), `"msg":"startup banner"`) {
+		t.Fatal("log file missing startup banner when stdout mirroring is enabled")
+	}
+}
+
+func TestRunServeFailsWhenLogDirectoryCannotBeCreated(t *testing.T) {
+	tmpDir := t.TempDir()
+	logDir := filepath.Join(tmpDir, "not-a-directory")
+	if err := os.WriteFile(logDir, []byte("file"), 0o600); err != nil {
+		t.Fatalf("write log dir placeholder: %v", err)
+	}
+
+	configPath := filepath.Join(tmpDir, "ongoingai.yaml")
+	configBody := fmt.Sprintf(`server:
+  host: 127.0.0.1
+  port: %d
+storage:
+  driver: sqlite
+  path: %q
+providers:
+  llm:
+    upstream: http://127.0.0.1:1
+    prefix: /llm
+logging:
+  dir: %q
+  stdout: false
+`, freeTCPPort(t), filepath.Join(tmpDir, "traces.db"), logDir)
+	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if code := runServe([]string{"--config", configPath}); code != 1 {
+		t.Fatalf("runServe exit code=%d, want 1", code)
+	}
+}
+
 type testRequestDetailsBackupScheduler struct {
 	mu             sync.Mutex
 	started        bool
@@ -453,7 +562,10 @@ providers:
     prefix: /llm
 tracing:
   capture_bodies: false
-%s`, port, filepath.Join(tmpDir, "traces.db"), backupBlock)
+logging:
+  dir: %q
+  stdout: false
+%s`, port, filepath.Join(tmpDir, "traces.db"), filepath.Join(tmpDir, "logs"), backupBlock)
 	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -487,11 +599,52 @@ tracing:
     cleanup_enabled: %s
     cleanup_daily_at: "03:30"
     cleanup_timezone: UTC
-`, port, filepath.Join(tmpDir, "traces.db"), cleanupEnabled)
+logging:
+  dir: %q
+  stdout: false
+`, port, filepath.Join(tmpDir, "traces.db"), cleanupEnabled, filepath.Join(tmpDir, "logs"))
 	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	return configPath, port
+}
+
+func writeServeConfigWithLogging(t *testing.T, stdout bool) (string, int, string) {
+	t.Helper()
+
+	port := freeTCPPort(t)
+	tmpDir := t.TempDir()
+	logDir := filepath.Join(tmpDir, "logs")
+	configPath := filepath.Join(tmpDir, "ongoingai.yaml")
+	configBody := fmt.Sprintf(`server:
+  host: 127.0.0.1
+  port: %d
+storage:
+  driver: sqlite
+  path: %q
+providers:
+  llm:
+    upstream: http://127.0.0.1:1
+    prefix: /llm
+logging:
+  dir: %q
+  stdout: %t
+`, port, filepath.Join(tmpDir, "traces.db"), logDir, stdout)
+	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return configPath, port, logDir
+}
+
+func readCurrentLogFile(t *testing.T, logDir string) string {
+	t.Helper()
+
+	path := filepath.Join(logDir, "ongoingai-"+time.Now().Format(logFileDateLayout)+".log")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read log file %s: %v", path, err)
+	}
+	return string(data)
 }
 
 func assertRunServeExitCode(t *testing.T, exitCodeCh <-chan int) {
