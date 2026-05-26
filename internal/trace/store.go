@@ -3,6 +3,7 @@ package trace
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -39,22 +40,40 @@ type TraceExporter interface {
 }
 
 type TraceFilter struct {
-	OrgID         string
-	WorkspaceID   string
-	TraceGroupID  string
-	ThreadID      string
-	RunID         string
-	Provider      string
-	Model         string
-	EndpointPaths []string
-	APIKeyHash    string
-	StatusCode    int
-	MinTokens     int
-	MaxTokens     int
-	From          time.Time
-	To            time.Time
-	Limit         int
-	Cursor        string
+	OrgID          string
+	WorkspaceID    string
+	TraceGroupID   string
+	ThreadID       string
+	RunID          string
+	Provider       string
+	ProviderPrefix string
+	Model          string
+	EndpointPaths  []string
+	APIKeyHash     string
+	StatusCode     int
+	MinTokens      int
+	MaxTokens      int
+	From           time.Time
+	To             time.Time
+	Limit          int
+	Cursor         string
+}
+
+func normalizeFilterProviderPrefix(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	if !strings.HasPrefix(value, "/") {
+		value = "/" + value
+	}
+	if len(value) > 1 {
+		value = strings.TrimRight(value, "/")
+	}
+	if value == "/" {
+		return ""
+	}
+	return value
 }
 
 // TraceExportFilter selects a stable, forward-only page of traces for export.

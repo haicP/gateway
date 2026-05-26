@@ -595,6 +595,10 @@ func buildTraceWhere(filter TraceFilter) (string, []any, error) {
 		where = append(where, "provider = ?")
 		args = append(args, filter.Provider)
 	}
+	if providerPrefix := normalizeFilterProviderPrefix(filter.ProviderPrefix); providerPrefix != "" {
+		where = append(where, "(request_path = ? OR request_path LIKE ?)")
+		args = append(args, providerPrefix, providerPrefix+"/%")
+	}
 	if filter.Model != "" {
 		where = append(where, "model = ?")
 		args = append(args, filter.Model)

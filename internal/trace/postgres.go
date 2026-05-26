@@ -822,6 +822,11 @@ func buildPostgresTraceWhere(filter TraceFilter) (string, []any, error) {
 	if filter.Provider != "" {
 		builder.addComparison("provider", "=", filter.Provider)
 	}
+	if providerPrefix := normalizeFilterProviderPrefix(filter.ProviderPrefix); providerPrefix != "" {
+		exact := builder.addArg(providerPrefix)
+		child := builder.addArg(providerPrefix + "/%")
+		builder.addCondition("(request_path = " + exact + " OR request_path LIKE " + child + ")")
+	}
 	if filter.Model != "" {
 		builder.addComparison("model", "=", filter.Model)
 	}

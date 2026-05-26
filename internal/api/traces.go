@@ -27,6 +27,7 @@ type traceSummary struct {
 	ID                 string    `json:"id"`
 	Timestamp          time.Time `json:"timestamp"`
 	Provider           string    `json:"provider"`
+	ProviderPrefix     string    `json:"provider_prefix,omitempty"`
 	Model              string    `json:"model"`
 	RequestMethod      string    `json:"request_method"`
 	RequestPath        string    `json:"request_path"`
@@ -50,6 +51,7 @@ type traceDetail struct {
 	Lineage            *traceLineage `json:"lineage,omitempty"`
 	Timestamp          time.Time     `json:"timestamp"`
 	Provider           string        `json:"provider"`
+	ProviderPrefix     string        `json:"provider_prefix,omitempty"`
 	Model              string        `json:"model"`
 	RequestMethod      string        `json:"request_method"`
 	RequestPath        string        `json:"request_path"`
@@ -259,21 +261,27 @@ func parseTraceFilter(r *http.Request, providerPrefixes []string) (trace.TraceFi
 		return trace.TraceFilter{}, fmt.Errorf("to must be greater than or equal to from")
 	}
 
+	providerPrefix, err := parseProviderPrefixFilter(query.Get("prefix"), providerPrefixes)
+	if err != nil {
+		return trace.TraceFilter{}, err
+	}
+
 	filter := trace.TraceFilter{
-		TraceGroupID:  strings.TrimSpace(query.Get("trace_group_id")),
-		ThreadID:      strings.TrimSpace(query.Get("thread_id")),
-		RunID:         strings.TrimSpace(query.Get("run_id")),
-		Provider:      strings.TrimSpace(query.Get("provider")),
-		Model:         strings.TrimSpace(query.Get("model")),
-		EndpointPaths: traceEndpointPathCandidates(query.Get("endpoint"), providerPrefixes),
-		APIKeyHash:    strings.TrimSpace(query.Get("api_key_hash")),
-		StatusCode:    statusCode,
-		MinTokens:     minTokens,
-		MaxTokens:     maxTokens,
-		From:          from,
-		To:            to,
-		Limit:         limit,
-		Cursor:        strings.TrimSpace(query.Get("cursor")),
+		TraceGroupID:   strings.TrimSpace(query.Get("trace_group_id")),
+		ThreadID:       strings.TrimSpace(query.Get("thread_id")),
+		RunID:          strings.TrimSpace(query.Get("run_id")),
+		Provider:       strings.TrimSpace(query.Get("provider")),
+		ProviderPrefix: providerPrefix,
+		Model:          strings.TrimSpace(query.Get("model")),
+		EndpointPaths:  traceEndpointPathCandidates(query.Get("endpoint"), providerPrefixes),
+		APIKeyHash:     strings.TrimSpace(query.Get("api_key_hash")),
+		StatusCode:     statusCode,
+		MinTokens:      minTokens,
+		MaxTokens:      maxTokens,
+		From:           from,
+		To:             to,
+		Limit:          limit,
+		Cursor:         strings.TrimSpace(query.Get("cursor")),
 	}
 	applyTraceTenantScope(r, &filter)
 
@@ -285,6 +293,7 @@ func summarizeTrace(item *trace.Trace, providerPrefixes []string) traceSummary {
 		ID:                 item.ID,
 		Timestamp:          item.Timestamp,
 		Provider:           item.Provider,
+		ProviderPrefix:     traceProviderPrefix(item.RequestPath, providerPrefixes),
 		Model:              item.Model,
 		RequestMethod:      item.RequestMethod,
 		RequestPath:        item.RequestPath,
@@ -311,6 +320,7 @@ func detailTrace(item *trace.Trace, providerPrefixes []string) traceDetail {
 		Lineage:            buildTraceLineage(item, metadata, true),
 		Timestamp:          item.Timestamp,
 		Provider:           item.Provider,
+		ProviderPrefix:     traceProviderPrefix(item.RequestPath, providerPrefixes),
 		Model:              item.Model,
 		RequestMethod:      item.RequestMethod,
 		RequestPath:        item.RequestPath,
@@ -903,6 +913,23 @@ func normalizeDashboardProviderPrefixes(prefixes []string) []string {
 	return out
 }
 
+func parseProviderPrefixFilter(raw string, providerPrefixes []string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", nil
+	}
+	normalized := pathutil.NormalizePrefix(value)
+	if normalized == "/" {
+		return "", fmt.Errorf("prefix must be one of the configured provider prefixes")
+	}
+	for _, prefix := range providerPrefixes {
+		if normalized == prefix {
+			return normalized, nil
+		}
+	}
+	return "", fmt.Errorf("prefix must be one of the configured provider prefixes")
+}
+
 func traceEndpointPathCandidates(raw string, providerPrefixes []string) []string {
 	endpoint := normalizeEndpointPath(raw)
 	if endpoint == "" {
@@ -946,6 +973,19 @@ func displayEndpoint(requestPath string, providerPrefixes []string) string {
 		}
 	}
 	return path
+}
+
+func traceProviderPrefix(requestPath string, providerPrefixes []string) string {
+	path := normalizeEndpointPath(requestPath)
+	if path == "" {
+		return ""
+	}
+	for _, prefix := range providerPrefixes {
+		if pathutil.HasPathPrefix(path, prefix) {
+			return prefix
+		}
+	}
+	return ""
 }
 
 func extractTraceUserAgent(rawHeaders string) string {

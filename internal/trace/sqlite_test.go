@@ -593,6 +593,43 @@ func TestSQLiteStoreDeleteTracesBefore(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreQueryTracesFiltersProviderPrefix(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "provider-prefix.db")
+	store, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error: %v", err)
+	}
+	defer store.Close()
+
+	base := time.Date(2026, 5, 26, 1, 0, 0, 0, time.UTC)
+	rows := []*Trace{
+		{ID: "prefix-root", Timestamp: base, Provider: "llm", Model: "model", RequestMethod: "POST", RequestPath: "/llm", ResponseStatus: 200, CreatedAt: base},
+		{ID: "prefix-child", Timestamp: base.Add(time.Second), Provider: "llm", Model: "model", RequestMethod: "POST", RequestPath: "/llm/v1/responses", ResponseStatus: 200, CreatedAt: base.Add(time.Second)},
+		{ID: "prefix-similar", Timestamp: base.Add(2 * time.Second), Provider: "llm", Model: "model", RequestMethod: "POST", RequestPath: "/llmish/v1/responses", ResponseStatus: 200, CreatedAt: base.Add(2 * time.Second)},
+	}
+	for _, row := range rows {
+		if err := store.WriteTrace(context.Background(), row); err != nil {
+			t.Fatalf("WriteTrace(%s) error: %v", row.ID, err)
+		}
+	}
+
+	result, err := store.QueryTraces(context.Background(), TraceFilter{ProviderPrefix: "/llm"})
+	if err != nil {
+		t.Fatalf("QueryTraces() error: %v", err)
+	}
+	if len(result.Items) != 2 {
+		t.Fatalf("item count=%d, want 2: %#v", len(result.Items), result.Items)
+	}
+	if result.Items[0].ID != "prefix-child" || result.Items[1].ID != "prefix-root" {
+		t.Fatalf("items=%v, want child/root", traceIDs(result.Items))
+	}
+	if result.TotalCount != 2 {
+		t.Fatalf("total count=%d, want 2", result.TotalCount)
+	}
+}
+
 func TestSQLiteStoreExportTracesOrdersPagesAndIncludesInlineBodies(t *testing.T) {
 	t.Parallel()
 

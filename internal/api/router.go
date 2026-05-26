@@ -35,7 +35,7 @@ func NewCoreRouter(options RouterOptions) http.Handler {
 	mux.Handle("/api/traces", TracesHandler(options.Store, options.ProviderPrefixes))
 	mux.Handle("/api/traces/", TraceDetailHandler(options.Store, options.ProviderPrefixes))
 	if options.DashboardEnabled {
-		mux.Handle("/dashboard", DashboardHandler())
+		mux.Handle("/dashboard", DashboardHandler(options.ProviderPrefixes))
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {

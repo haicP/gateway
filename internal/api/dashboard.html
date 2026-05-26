@@ -66,54 +66,7 @@
     .page {
       width: min(1600px, 100%);
       margin: 0 auto;
-      padding: 28px;
-    }
-
-    .hero {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 20px;
-      margin-bottom: 20px;
-    }
-
-    .hero-copy {
-      display: grid;
-      gap: 8px;
-    }
-
-    .eyebrow {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      color: var(--teal);
-      font-size: 12px;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-    }
-
-    .eyebrow::before {
-      content: "";
-      width: 8px;
-      height: 8px;
-      border-radius: 999px;
-      background: linear-gradient(135deg, var(--teal-strong), #2dd4bf);
-      box-shadow: 0 0 0 4px rgba(45, 212, 191, 0.12);
-    }
-
-    h1 {
-      margin: 0;
-      font-size: clamp(28px, 3vw, 36px);
-      line-height: 1.08;
-      letter-spacing: -0.03em;
-    }
-
-    .subtitle {
-      margin: 0;
-      max-width: 760px;
-      color: var(--muted);
-      line-height: 1.65;
+      padding: 0 28px 92px;
     }
 
     .panel {
@@ -125,9 +78,13 @@
     }
 
     .filters {
+      position: sticky;
+      top: 0;
+      z-index: 10;
       padding: 22px;
       display: grid;
       gap: 18px;
+      border-radius: 0 0 18px 18px;
     }
 
     .filter-fields {
@@ -240,41 +197,20 @@
 
     .table-shell {
       margin-top: 22px;
-      overflow: hidden;
-    }
-
-    .table-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-      padding: 18px 22px 0;
-    }
-
-    .table-title {
-      display: grid;
-      gap: 4px;
-    }
-
-    .table-title strong {
-      font-size: 16px;
-    }
-
-    .table-title span {
-      color: var(--muted);
-      line-height: 1.5;
+      overflow: visible;
+      backdrop-filter: none;
     }
 
     .table-scroll {
-      margin-top: 16px;
+      margin-top: 0;
       overflow: auto;
-      max-height: calc(100vh - 310px);
-      border-top: 1px solid rgba(226, 232, 240, 0.85);
+      max-height: calc(100vh - 300px);
+      border-radius: 18px 18px 0 0;
     }
 
     table {
       width: 100%;
-      min-width: 1220px;
+      min-width: 1320px;
       border-collapse: separate;
       border-spacing: 0;
     }
@@ -421,14 +357,23 @@
     }
 
     .footer {
+      position: fixed;
+      left: 50%;
+      width: min(calc(100% - 56px), 1544px);
+      bottom: 0;
+      z-index: 9;
+      transform: translateX(-50%);
       display: flex;
       justify-content: space-between;
       align-items: center;
       gap: 16px;
       margin-top: 0;
       padding: 16px 22px 18px;
-      background: rgba(255, 255, 255, 0.68);
+      background: rgba(255, 255, 255, 0.92);
       border-top: 1px solid rgba(226, 232, 240, 0.88);
+      border-radius: 0 0 18px 18px;
+      box-shadow: 0 -10px 28px rgba(15, 23, 42, 0.08);
+      backdrop-filter: blur(14px);
     }
 
     .summary-block {
@@ -627,14 +572,21 @@
       .field-wide {
         grid-column: span 1;
       }
+
+      .table-scroll {
+        max-height: calc(100vh - 380px);
+      }
     }
 
     @media (max-width: 900px) {
       .page {
-        padding: 20px;
+        padding: 0 20px 128px;
       }
 
-      .hero,
+      .footer {
+        width: calc(100% - 40px);
+      }
+
       .filter-actions,
       .footer {
         flex-direction: column;
@@ -656,15 +608,14 @@
 
     @media (max-width: 640px) {
       .page {
-        padding: 14px;
+        padding: 0 14px 156px;
       }
 
-      .hero {
-        margin-bottom: 16px;
+      .footer {
+        width: calc(100% - 28px);
       }
 
       .filters,
-      .table-head,
       .footer,
       .modal-header,
       .modal-body {
@@ -695,14 +646,6 @@
 </head>
 <body>
   <main class="page">
-    <section class="hero" aria-label="Dashboard introduction">
-      <div class="hero-copy">
-        <span class="eyebrow">Gateway Observability</span>
-        <h1>Trace Dashboard</h1>
-        <p class="subtitle">按时间、模型、端点和状态快速筛选请求轨迹，聚焦首 Token 延迟、总耗时与响应明细，提升排障与审计效率。</p>
-      </div>
-    </section>
-
     <section class="filters panel" aria-label="Trace filters">
       <div class="filter-fields">
         <div class="field">
@@ -716,6 +659,12 @@
             <option value="1d">近 1 天</option>
             <option value="30d">近 30 天</option>
             <option value="custom">自定义</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="prefix">Prefix</label>
+          <select id="prefix">
+            <option value="">全部 prefix</option>
           </select>
         </div>
         <div class="field">
@@ -752,17 +701,12 @@
     </section>
 
     <section class="table-shell panel" aria-label="Trace table">
-      <div class="table-head">
-        <div class="table-title">
-          <strong>请求列表</strong>
-          <span>支持横向滚动查看完整字段，悬停可更快对齐当前行。</span>
-        </div>
-      </div>
       <div class="table-scroll">
         <table>
           <thead>
             <tr>
               <th>时间</th>
+              <th>Provider</th>
               <th>模型</th>
               <th>端点</th>
               <th>状态</th>
@@ -817,6 +761,8 @@
       </header>
       <div class="modal-body">
         <div class="detail-grid">
+          <div class="detail-box"><span>Provider</span><strong id="detailProvider">-</strong></div>
+          <div class="detail-box"><span>Prefix</span><strong id="detailPrefix">-</strong></div>
           <div class="detail-box"><span>模型</span><strong id="detailModel">-</strong></div>
           <div class="detail-box"><span>端点</span><strong id="detailEndpoint">-</strong></div>
           <div class="detail-box"><span>状态</span><strong id="detailStatus">-</strong></div>
@@ -834,6 +780,7 @@
   </div>
 
   <script>
+    const providerPrefixes = __PROVIDER_PREFIXES__;
     const state = {
       items: [],
       cursorStack: [''],
@@ -847,6 +794,8 @@
     const rows = $('rows');
     const empty = $('empty');
     const customTimeFields = Array.from(document.querySelectorAll('.custom-time'));
+
+    populateProviderPrefixes();
 
     $('range').addEventListener('change', () => {
       const custom = $('range').value === 'custom';
@@ -873,6 +822,7 @@
     function resetFilters() {
       $('apiKey').value = '';
       $('range').value = '7d';
+      $('prefix').value = '';
       $('model').value = '';
       $('endpoint').value = '';
       $('status').value = '';
@@ -988,9 +938,11 @@
       const params = new URLSearchParams();
       params.set('limit', $('limit').value);
       const model = $('model').value.trim();
+      const prefix = $('prefix').value.trim();
       const endpoint = $('endpoint').value.trim();
       const status = $('status').value.trim();
       if (model) params.set('model', model);
+      if (prefix) params.set('prefix', prefix);
       if (endpoint) params.set('endpoint', endpoint);
       if (status) params.set('status', status);
       const key = $('apiKey').value.trim();
@@ -1032,6 +984,7 @@
         const tr = document.createElement('tr');
         tr.innerHTML = [
           td(formatDate(item.created_at || item.timestamp), 'cell-time'),
+          td(providerHTML(item)),
           td(escapeHTML(item.model || 'unknown'), 'strong'),
           td(escapeHTML(item.endpoint || item.request_path || '/')),
           td(statusHTML(item.response_status), 'cell-status'),
@@ -1075,6 +1028,12 @@
       return `<div class="tokens"><div class="token-main">↓ ${input} &nbsp; ↑ ${output}</div><div class="token-sub">总 ${total}</div></div>`;
     }
 
+    function providerHTML(item) {
+      const provider = item.provider || 'unknown';
+      const prefix = item.provider_prefix || '-';
+      return `<div class="tokens"><div class="token-main">${escapeHTML(provider)}</div><div class="token-sub">${escapeHTML(prefix)}</div></div>`;
+    }
+
     function formatSeconds(ms) {
       const value = Number(ms || 0);
       if (!value) return '-';
@@ -1104,6 +1063,19 @@
       }
     }
 
+    function populateProviderPrefixes() {
+      const select = $('prefix');
+      const existing = new Set(Array.from(select.options).map((option) => option.value));
+      for (const prefix of providerPrefixes) {
+        if (!prefix || existing.has(prefix)) continue;
+        const option = document.createElement('option');
+        option.value = prefix;
+        option.textContent = prefix;
+        select.appendChild(option);
+        existing.add(prefix);
+      }
+    }
+
     function setButtons() {
       $('prev').disabled = state.loading || state.pageIndex === 0;
       $('next').disabled = state.loading || !state.nextCursor;
@@ -1127,6 +1099,8 @@
       $('detailModal').hidden = false;
       $('detailTitle').textContent = '请求详情';
       $('detailSubTitle').textContent = id;
+      $('detailProvider').textContent = '-';
+      $('detailPrefix').textContent = '-';
       $('detailModel').textContent = '-';
       $('detailEndpoint').textContent = '-';
       $('detailStatus').textContent = '-';
@@ -1139,6 +1113,8 @@
         });
         if (!res.ok) throw new Error(await errorMessage(res));
         const detail = await res.json();
+        $('detailProvider').textContent = detail.provider || 'unknown';
+        $('detailPrefix').textContent = detail.provider_prefix || '-';
         $('detailModel').textContent = detail.model || 'unknown';
         $('detailEndpoint').textContent = detail.endpoint || detail.request_path || '/';
         $('detailStatus').textContent = String(detail.response_status || '-');
@@ -1176,11 +1152,13 @@
     }
 
     function exportCSV() {
-      const headers = ['created_at', 'model', 'endpoint', 'status', 'input_tokens', 'output_tokens', 'total_tokens', 'ttft_ms', 'latency_ms', 'user_agent'];
+      const headers = ['created_at', 'provider', 'provider_prefix', 'model', 'endpoint', 'status', 'input_tokens', 'output_tokens', 'total_tokens', 'ttft_ms', 'latency_ms', 'user_agent'];
       const lines = [headers.join(',')];
       for (const item of state.items) {
         lines.push([
           item.created_at || item.timestamp || '',
+          item.provider || '',
+          item.provider_prefix || '',
           item.model || '',
           item.endpoint || item.request_path || '',
           item.response_status || '',

@@ -334,6 +334,38 @@ func TestBuildPostgresTraceWhereFiltersEndpointPaths(t *testing.T) {
 	}
 }
 
+func TestPostgresStoreQueryTracesFiltersProviderPrefix(t *testing.T) {
+	store := newPostgresTestStore(t)
+	idPrefix := "provider_prefix_" + strings.ReplaceAll(t.Name(), "/", "_") + "_"
+	cleanupPostgresTestTraces(t, store, idPrefix)
+
+	base := time.Date(2026, 5, 26, 1, 0, 0, 0, time.UTC)
+	rows := []*Trace{
+		{ID: idPrefix + "root", Timestamp: base, Provider: "llm", Model: "model", RequestMethod: "POST", RequestPath: "/llm", ResponseStatus: 200, CreatedAt: base},
+		{ID: idPrefix + "child", Timestamp: base.Add(time.Second), Provider: "llm", Model: "model", RequestMethod: "POST", RequestPath: "/llm/v1/responses", ResponseStatus: 200, CreatedAt: base.Add(time.Second)},
+		{ID: idPrefix + "similar", Timestamp: base.Add(2 * time.Second), Provider: "llm", Model: "model", RequestMethod: "POST", RequestPath: "/llmish/v1/responses", ResponseStatus: 200, CreatedAt: base.Add(2 * time.Second)},
+	}
+	for _, row := range rows {
+		if err := store.WriteTrace(context.Background(), row); err != nil {
+			t.Fatalf("WriteTrace(%s) error: %v", row.ID, err)
+		}
+	}
+
+	result, err := store.QueryTraces(context.Background(), TraceFilter{ProviderPrefix: "/llm"})
+	if err != nil {
+		t.Fatalf("QueryTraces() error: %v", err)
+	}
+	if len(result.Items) != 2 {
+		t.Fatalf("item count=%d, want 2: %#v", len(result.Items), result.Items)
+	}
+	if result.Items[0].ID != idPrefix+"child" || result.Items[1].ID != idPrefix+"root" {
+		t.Fatalf("items=%v, want child/root", traceIDs(result.Items))
+	}
+	if result.TotalCount != 2 {
+		t.Fatalf("total count=%d, want 2", result.TotalCount)
+	}
+}
+
 func TestPostgresStoreWritesCompressedSpoolBodiesAndQueriesSummaries(t *testing.T) {
 	store := newPostgresTestStore(t)
 
