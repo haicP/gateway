@@ -273,16 +273,25 @@
       font-feature-settings: "tnum";
     }
 
+    .cell-tokens {
+      width: 148px;
+      min-width: 148px;
+    }
+
     .cell-status,
     .cell-action {
       white-space: nowrap;
     }
 
     .user-agent {
-      max-width: 280px;
+      display: -webkit-box;
+      max-width: 620px;
+      max-height: calc(1.45em * 2);
       overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
     }
 
     .status-badge {
@@ -317,6 +326,16 @@
       box-shadow: 0 0 0 4px rgba(4, 120, 87, 0.12);
     }
 
+    .status-badge.switching {
+      color: #06b6d4;
+      background: rgba(6, 182, 212, 0.12);
+      border-color: rgba(6, 182, 212, 0.22);
+    }
+
+    .status-badge.switching::before {
+      box-shadow: 0 0 0 4px rgba(6, 182, 212, 0.14);
+    }
+
     .status-badge.bad {
       color: var(--red);
       background: var(--red-soft);
@@ -343,11 +362,13 @@
 
     .token-main {
       font-weight: 700;
+      white-space: nowrap;
     }
 
     .token-sub {
       color: var(--muted);
       font-size: 12px;
+      white-space: nowrap;
     }
 
     .link-button {
@@ -1023,7 +1044,7 @@
 
     function statusHTML(status) {
       if (!status) return '<span class="status-badge neutral">-</span>';
-      const cls = status >= 200 && status < 400 ? 'ok' : 'bad';
+      const cls = status === 101 ? 'switching' : status >= 200 && status < 400 ? 'ok' : 'bad';
       return `<span class="status-badge ${cls}">${escapeHTML(String(status))}</span>`;
     }
 
