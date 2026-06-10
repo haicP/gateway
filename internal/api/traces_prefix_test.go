@@ -216,4 +216,10 @@ func TestDashboardInjectsProviderPrefixes(t *testing.T) {
 	if !strings.Contains(body, `请求文本`) || !strings.Contains(body, `id="detailPrompt"`) {
 		t.Fatal("dashboard body missing request prompt detail block")
 	}
+	if !strings.Contains(body, `function sha256HexFallback(data)`) || !strings.Contains(body, `globalThis.crypto?.subtle?.digest`) {
+		t.Fatal("dashboard body missing local SHA-256 fallback for non-secure browser contexts")
+	}
+	if strings.Contains(body, `params.set('api_key'`) {
+		t.Fatal("dashboard must not send plaintext api keys in trace query params")
+	}
 }
