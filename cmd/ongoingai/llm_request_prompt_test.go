@@ -75,6 +75,52 @@ func TestExtractLLMRequestPromptResponsesInput(t *testing.T) {
 	}
 }
 
+func TestExtractLLMRequestPromptWebSocketCapturedResponsesInput(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`[
+		{"direction":"upstream_to_client","opcode":"text","payload":{"type":"response.output_text.delta","delta":"ignore"}},
+		{"direction":"client_to_upstream","opcode":"text","payload":{"type":"response.create","input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"first"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"last"}]}
+		]}}
+	]`)
+
+	got, ok := extractLLMRequestPrompt(body)
+	if !ok || got != "last" {
+		t.Fatalf("prompt=%q ok=%v, want last websocket user prompt", got, ok)
+	}
+}
+
+func TestExtractLLMRequestPromptWebSocketCapturedRealtimeConversationItem(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`[
+		{"direction":"client_to_upstream","opcode":"text","payload":{"type":"conversation.item.create","item":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello realtime"}]}}},
+		{"direction":"client_to_upstream","opcode":"text","payload":{"type":"response.create","response":{"modalities":["text"]}}}
+	]`)
+
+	got, ok := extractLLMRequestPrompt(body)
+	if !ok || got != "hello realtime" {
+		t.Fatalf("prompt=%q ok=%v, want realtime user prompt", got, ok)
+	}
+}
+
+func TestExtractLLMRequestPromptWebSocketCapturedCodexTurnInput(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`[
+		{"direction":"client_to_upstream","opcode":"text","payload":{"method":"turn/start","params":{"input":[{"type":"text","text":"first"}]}}},
+		{"direction":"client_to_upstream","opcode":"text","payload":{"method":"turn/steer","params":{"input":[{"type":"text","text":"last steer"}]}}}
+	]`)
+
+	got, ok := extractLLMRequestPrompt(body)
+	if !ok || got != "last steer" {
+		t.Fatalf("prompt=%q ok=%v, want codex turn input", got, ok)
+	}
+}
+
 func TestExtractLLMRequestPromptRejectsMissingOrMalformedText(t *testing.T) {
 	t.Parallel()
 

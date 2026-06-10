@@ -134,6 +134,11 @@ func TestLLMResponseContentEnricherUpdatesWebSocketTraceAfterWriterSuccess(t *te
 		RequestMethod:  "GET",
 		RequestPath:    "/llmgateway/v1/responses",
 		ResponseStatus: 101,
+		RequestBody: `[
+			{"direction":"client_to_upstream","opcode":"text","payload":{"type":"response.create","input":[
+				{"type":"message","role":"user","content":[{"type":"input_text","text":"websocket prompt"}]}
+			]}}
+		]`,
 		ResponseBody: `[
 			{"direction":"client_to_upstream","opcode":"text","payload":{"type":"response.output_text.delta","item_id":"msg_1","delta":"ignore"}},
 			{"direction":"upstream_to_client","opcode":"text","payload":{"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\"city\""}},
@@ -149,6 +154,7 @@ func TestLLMResponseContentEnricherUpdatesWebSocketTraceAfterWriterSuccess(t *te
 	}
 
 	waitForLLMResponseContent(t, store, traceID, `"arguments":"{\"city\":\"Paris\"}"`)
+	waitForLLMRequestPrompt(t, store, traceID, "websocket prompt")
 }
 
 func TestLLMResponseContentEnricherSkipsLargeBodyRedactionBypass(t *testing.T) {

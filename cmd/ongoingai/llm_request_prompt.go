@@ -7,10 +7,19 @@ import (
 
 func extractLLMRequestPrompt(body []byte) (string, bool) {
 	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return "", false
+	if err := json.Unmarshal(body, &payload); err == nil {
+		return extractLLMRequestPromptPayload(payload)
 	}
 
+	var messages []map[string]any
+	if err := json.Unmarshal(body, &messages); err == nil {
+		return extractLLMRequestPromptFromWebSocketCapturedMessages(messages)
+	}
+
+	return "", false
+}
+
+func extractLLMRequestPromptPayload(payload map[string]any) (string, bool) {
 	if prompt, ok := extractLastUserPromptFromMessages(asSlice(payload["messages"])); ok {
 		return prompt, true
 	}
@@ -23,6 +32,55 @@ func extractLLMRequestPrompt(body []byte) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func extractLLMRequestPromptFromWebSocketCapturedMessages(messages []map[string]any) (string, bool) {
+	for i := len(messages) - 1; i >= 0; i-- {
+		message := messages[i]
+		if strings.TrimSpace(stringValue(message["direction"])) != "client_to_upstream" {
+			continue
+		}
+		if strings.TrimSpace(stringValue(message["opcode"])) != "text" {
+			continue
+		}
+		payload, ok := webSocketCapturedPayloadMap(message["payload"])
+		if !ok {
+			continue
+		}
+		if prompt, ok := extractLLMRequestPromptPayload(payload); ok {
+			return prompt, true
+		}
+		if prompt, ok := extractLLMRequestPromptFromWebSocketPayload(payload); ok {
+			return prompt, true
+		}
+	}
+	return "", false
+}
+
+func extractLLMRequestPromptFromWebSocketPayload(payload map[string]any) (string, bool) {
+	if payload == nil {
+		return "", false
+	}
+	if item := asMap(payload["item"]); strings.TrimSpace(stringValue(item["role"])) == "user" {
+		if prompt, ok := extractPromptText(item); ok {
+			return prompt, true
+		}
+	}
+	if response := asMap(payload["response"]); response != nil {
+		if prompt, ok := extractLLMRequestPromptPayload(response); ok {
+			return prompt, true
+		}
+	}
+
+	method := strings.TrimSpace(stringValue(payload["method"]))
+	if method != "turn/start" && method != "turn/steer" {
+		return "", false
+	}
+	params := asMap(payload["params"])
+	if params == nil {
+		return "", false
+	}
+	return extractTextValue(params["input"])
 }
 
 func extractLastUserPromptFromMessages(messages []any) (string, bool) {
