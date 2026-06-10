@@ -28,6 +28,9 @@ func TestApplySQLiteCreatesSchemaAndRecordsMigrations(t *testing.T) {
 	if !sqliteTableExists(t, db, "traces") {
 		t.Fatal("expected traces table to exist after migrations")
 	}
+	if !sqliteColumnExists(t, db, "traces", "llm_request_prompt") {
+		t.Fatal("expected traces.llm_request_prompt to exist after migrations")
+	}
 
 	var count int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
@@ -95,4 +98,35 @@ func sqliteTableExists(t *testing.T, db *sql.DB, table string) bool {
 		t.Fatalf("query sqlite_master for table %q: %v", table, err)
 	}
 	return count > 0
+}
+
+func sqliteColumnExists(t *testing.T, db *sql.DB, table, column string) bool {
+	t.Helper()
+
+	rows, err := db.Query(`PRAGMA table_info(` + table + `);`)
+	if err != nil {
+		t.Fatalf("query table_info for table %q: %v", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			typ       string
+			notnull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dfltValue, &pk); err != nil {
+			t.Fatalf("scan table_info for table %q: %v", table, err)
+		}
+		if name == column {
+			return true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate table_info for table %q: %v", table, err)
+	}
+	return false
 }

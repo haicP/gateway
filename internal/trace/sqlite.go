@@ -50,11 +50,11 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	if err := store.ensureOptionalColumns(); err != nil {
+	if err := store.ensureSchema(); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
-	if err := store.ensureSchema(); err != nil {
+	if err := store.ensureOptionalColumns(); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -95,6 +95,7 @@ func (s *SQLiteStore) WriteTrace(ctx context.Context, trace *Trace) error {
     response_status,
     response_headers,
     response_body,
+    llm_request_prompt,
     llm_response_content,
     input_tokens,
     output_tokens,
@@ -107,7 +108,7 @@ func (s *SQLiteStore) WriteTrace(ctx context.Context, trace *Trace) error {
 	    estimated_cost_usd,
 	    metadata,
 	    created_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			row.ID,
 			row.TraceGroupID,
 			row.OrgID,
@@ -122,6 +123,7 @@ func (s *SQLiteStore) WriteTrace(ctx context.Context, trace *Trace) error {
 			row.ResponseStatus,
 			row.ResponseHeaders,
 			row.ResponseBody,
+			row.LLMRequestPrompt,
 			row.LLMResponseContent,
 			row.InputTokens,
 			row.OutputTokens,
@@ -177,6 +179,7 @@ INSERT INTO traces (
     response_status,
     response_headers,
     response_body,
+    llm_request_prompt,
     llm_response_content,
     input_tokens,
     output_tokens,
@@ -189,7 +192,7 @@ INSERT INTO traces (
 	    estimated_cost_usd,
 	    metadata,
 	    created_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 		if err != nil {
 			return fmt.Errorf("prepare sqlite batch insert: %w", err)
 		}
@@ -216,6 +219,7 @@ INSERT INTO traces (
 				row.ResponseStatus,
 				row.ResponseHeaders,
 				row.ResponseBody,
+				row.LLMRequestPrompt,
 				row.LLMResponseContent,
 				row.InputTokens,
 				row.OutputTokens,
@@ -363,6 +367,7 @@ request_body,
 response_status,
 response_headers,
 response_body,
+llm_request_prompt,
 llm_response_content,
 input_tokens,
 output_tokens,
@@ -391,6 +396,7 @@ request_headers,
 response_status,
 response_headers,
 '' AS response_body,
+'' AS llm_request_prompt,
 '' AS llm_response_content,
 input_tokens,
 output_tokens,
@@ -444,6 +450,38 @@ WHERE id = ?`, content, traceID)
 	})
 	if err != nil {
 		return fmt.Errorf("update llm response content %q: %w", traceID, err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) UpdateLLMRequestPrompt(ctx context.Context, traceID, prompt string) error {
+	traceID = strings.TrimSpace(traceID)
+	if traceID == "" {
+		return nil
+	}
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	err := retrySQLiteBusy(ctx, func() error {
+		result, err := s.db.ExecContext(ctx, `
+UPDATE traces
+SET llm_request_prompt = ?
+WHERE id = ?`, prompt, traceID)
+		if err != nil {
+			return err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("update llm request prompt %q: %w", traceID, err)
 	}
 	return nil
 }
@@ -761,6 +799,7 @@ func scanTraceRow(scanner rowScanner) (*Trace, error) {
 		responseStatus     sql.NullInt64
 		responseHeaders    sql.NullString
 		responseBody       sql.NullString
+		llmRequestPrompt   sql.NullString
 		llmResponseContent sql.NullString
 		inputTokens        sql.NullInt64
 		outputTokens       sql.NullInt64
@@ -789,6 +828,7 @@ func scanTraceRow(scanner rowScanner) (*Trace, error) {
 		&responseStatus,
 		&responseHeaders,
 		&responseBody,
+		&llmRequestPrompt,
 		&llmResponseContent,
 		&inputTokens,
 		&outputTokens,
@@ -836,6 +876,9 @@ func scanTraceRow(scanner rowScanner) (*Trace, error) {
 	}
 	if responseBody.Valid {
 		item.ResponseBody = responseBody.String
+	}
+	if llmRequestPrompt.Valid {
+		item.LLMRequestPrompt = llmRequestPrompt.String
 	}
 	if llmResponseContent.Valid {
 		item.LLMResponseContent = llmResponseContent.String
@@ -992,6 +1035,11 @@ func (s *SQLiteStore) ensureOptionalColumns() error {
 	if !columns["workspace_id"] {
 		if _, err := s.db.Exec(`ALTER TABLE traces ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default';`); err != nil {
 			return fmt.Errorf("add workspace_id column: %w", err)
+		}
+	}
+	if !columns["llm_request_prompt"] {
+		if _, err := s.db.Exec(`ALTER TABLE traces ADD COLUMN llm_request_prompt TEXT;`); err != nil {
+			return fmt.Errorf("add llm_request_prompt column: %w", err)
 		}
 	}
 	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_traces_org_workspace_created_at_id ON traces(org_id, workspace_id, created_at DESC, id DESC);`); err != nil {

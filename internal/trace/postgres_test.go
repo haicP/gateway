@@ -40,20 +40,21 @@ func (s postgresExportScanner) Scan(dest ...any) error {
 	*(dest[11].(*sql.NullInt64)) = sql.NullInt64{Int64: 200, Valid: true}
 	*(dest[12].(*sql.NullString)) = sql.NullString{String: `{"content-type":["application/json"]}`, Valid: true}
 	*(dest[13].(*sql.NullString)) = sql.NullString{String: "inline response", Valid: true}
-	*(dest[14].(*sql.NullString)) = sql.NullString{String: `{"schema_version":"llm_response_content.v1","parts":[]}`, Valid: true}
-	*(dest[15].(*sql.NullInt64)) = sql.NullInt64{Int64: 10, Valid: true}
-	*(dest[16].(*sql.NullInt64)) = sql.NullInt64{Int64: 20, Valid: true}
-	*(dest[17].(*sql.NullInt64)) = sql.NullInt64{Int64: 30, Valid: true}
-	*(dest[18].(*sql.NullInt64)) = sql.NullInt64{Int64: 100, Valid: true}
-	*(dest[19].(*sql.NullInt64)) = sql.NullInt64{Int64: 12, Valid: true}
-	*(dest[20].(*sql.NullInt64)) = sql.NullInt64{Int64: 12000, Valid: true}
-	*(dest[21].(*sql.NullString)) = sql.NullString{String: "hash", Valid: true}
-	*(dest[22].(*sql.NullString)) = sql.NullString{String: "key-1", Valid: true}
-	*(dest[23].(*sql.NullFloat64)) = sql.NullFloat64{Float64: 0.001, Valid: true}
-	*(dest[24].(*sql.NullString)) = sql.NullString{String: `{"body_pii_status":"skipped_large_body"}`, Valid: true}
-	*(dest[25].(*sql.NullTime)) = sql.NullTime{Time: time.Date(2026, 2, 12, 1, 0, 1, 0, time.UTC), Valid: true}
-	*(dest[26].(*[]byte)) = s.requestBodyGzip
-	*(dest[27].(*[]byte)) = s.responseBodyGzip
+	*(dest[14].(*sql.NullString)) = sql.NullString{String: "request prompt", Valid: true}
+	*(dest[15].(*sql.NullString)) = sql.NullString{String: `{"schema_version":"llm_response_content.v1","parts":[]}`, Valid: true}
+	*(dest[16].(*sql.NullInt64)) = sql.NullInt64{Int64: 10, Valid: true}
+	*(dest[17].(*sql.NullInt64)) = sql.NullInt64{Int64: 20, Valid: true}
+	*(dest[18].(*sql.NullInt64)) = sql.NullInt64{Int64: 30, Valid: true}
+	*(dest[19].(*sql.NullInt64)) = sql.NullInt64{Int64: 100, Valid: true}
+	*(dest[20].(*sql.NullInt64)) = sql.NullInt64{Int64: 12, Valid: true}
+	*(dest[21].(*sql.NullInt64)) = sql.NullInt64{Int64: 12000, Valid: true}
+	*(dest[22].(*sql.NullString)) = sql.NullString{String: "hash", Valid: true}
+	*(dest[23].(*sql.NullString)) = sql.NullString{String: "key-1", Valid: true}
+	*(dest[24].(*sql.NullFloat64)) = sql.NullFloat64{Float64: 0.001, Valid: true}
+	*(dest[25].(*sql.NullString)) = sql.NullString{String: `{"body_pii_status":"skipped_large_body"}`, Valid: true}
+	*(dest[26].(*sql.NullTime)) = sql.NullTime{Time: time.Date(2026, 2, 12, 1, 0, 1, 0, time.UTC), Valid: true}
+	*(dest[27].(*[]byte)) = s.requestBodyGzip
+	*(dest[28].(*[]byte)) = s.responseBodyGzip
 	return nil
 }
 
@@ -78,6 +79,9 @@ func TestScanPostgresTraceExportRowDecompressesJoinedBodies(t *testing.T) {
 	}
 	if got.LLMResponseContent == "" {
 		t.Fatal("expected llm_response_content to be scanned")
+	}
+	if got.LLMRequestPrompt != "request prompt" {
+		t.Fatalf("llm_request_prompt=%q, want request prompt", got.LLMRequestPrompt)
 	}
 }
 

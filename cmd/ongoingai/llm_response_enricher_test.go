@@ -52,6 +52,67 @@ func TestLLMResponseContentEnricherUpdatesEligibleTrace(t *testing.T) {
 	t.Fatalf("llm_response_content=%q, want enriched content", got.LLMResponseContent)
 }
 
+func TestLLMResponseContentEnricherUpdatesRequestPrompt(t *testing.T) {
+	t.Parallel()
+
+	store := newEnricherSQLiteStore(t)
+	if err := store.WriteTrace(context.Background(), &trace.Trace{
+		ID:             "trace-prompt",
+		Provider:       "openai",
+		Model:          "gpt-4o-mini",
+		RequestMethod:  "POST",
+		RequestPath:    "/openai/v1/chat/completions",
+		RequestBody:    `{"messages":[{"role":"user","content":"first"},{"role":"assistant","content":"ok"},{"role":"user","content":"last"}]}`,
+		ResponseStatus: 200,
+		Metadata:       `{"streaming":false}`,
+	}); err != nil {
+		t.Fatalf("WriteTrace() error: %v", err)
+	}
+
+	enricher := newLLMResponseContentEnricher(store, nil, 4, time.Second)
+	enricher.Start(context.Background())
+	defer func() {
+		_ = enricher.Shutdown(context.Background())
+	}()
+	enricher.EnqueueTraceIDs([]string{"trace-prompt"})
+
+	waitForLLMRequestPrompt(t, store, "trace-prompt", "last")
+}
+
+func TestLLMResponseContentEnricherDoesNotOverwriteRequestPrompt(t *testing.T) {
+	t.Parallel()
+
+	store := newEnricherSQLiteStore(t)
+	if err := store.WriteTrace(context.Background(), &trace.Trace{
+		ID:               "trace-existing-prompt",
+		Provider:         "openai",
+		Model:            "gpt-4o-mini",
+		RequestMethod:    "POST",
+		RequestPath:      "/openai/v1/chat/completions",
+		RequestBody:      `{"messages":[{"role":"user","content":"new"}]}`,
+		LLMRequestPrompt: "existing",
+		ResponseStatus:   200,
+		Metadata:         `{"streaming":false}`,
+	}); err != nil {
+		t.Fatalf("WriteTrace() error: %v", err)
+	}
+
+	enricher := newLLMResponseContentEnricher(store, nil, 4, time.Second)
+	enricher.Start(context.Background())
+	enricher.EnqueueTraceIDs([]string{"trace-existing-prompt"})
+	if err := enricher.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() error: %v", err)
+	}
+
+	got, err := store.GetTrace(context.Background(), "trace-existing-prompt")
+	if err != nil {
+		t.Fatalf("GetTrace() error: %v", err)
+	}
+	if got.LLMRequestPrompt != "existing" {
+		t.Fatalf("llm_request_prompt=%q, want existing", got.LLMRequestPrompt)
+	}
+}
+
 func TestLLMResponseContentEnricherUpdatesWebSocketTraceAfterWriterSuccess(t *testing.T) {
 	t.Parallel()
 
@@ -101,6 +162,7 @@ func TestLLMResponseContentEnricherSkipsLargeBodyRedactionBypass(t *testing.T) {
 		RequestMethod:  "POST",
 		RequestPath:    "/openai/v1/chat/completions",
 		ResponseStatus: 200,
+		RequestBody:    `{"messages":[{"role":"user","content":"secret prompt"}]}`,
 		ResponseBody:   `{"choices":[{"message":{"content":"secret"}}]}`,
 		Metadata:       `{"streaming":false,"body_pii_status":"skipped_large_body","redaction_storage_skipped":true}`,
 	}); err != nil {
@@ -120,6 +182,9 @@ func TestLLMResponseContentEnricherSkipsLargeBodyRedactionBypass(t *testing.T) {
 	}
 	if got.LLMResponseContent != "" {
 		t.Fatalf("llm_response_content=%q, want skipped", got.LLMResponseContent)
+	}
+	if got.LLMRequestPrompt != "" {
+		t.Fatalf("llm_request_prompt=%q, want skipped", got.LLMRequestPrompt)
 	}
 }
 
@@ -141,6 +206,26 @@ func waitForLLMResponseContent(t *testing.T, store trace.TraceStore, traceID, wa
 		t.Fatalf("GetTrace() error: %v", err)
 	}
 	t.Fatalf("llm_response_content=%q, want containing %s", got.LLMResponseContent, want)
+}
+
+func waitForLLMRequestPrompt(t *testing.T, store trace.TraceStore, traceID, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got, err := store.GetTrace(context.Background(), traceID)
+		if err != nil {
+			t.Fatalf("GetTrace() error: %v", err)
+		}
+		if got.LLMRequestPrompt == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	got, err := store.GetTrace(context.Background(), traceID)
+	if err != nil {
+		t.Fatalf("GetTrace() error: %v", err)
+	}
+	t.Fatalf("llm_request_prompt=%q, want %q", got.LLMRequestPrompt, want)
 }
 
 func newEnricherSQLiteStore(t *testing.T) *trace.SQLiteStore {

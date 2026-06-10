@@ -33,6 +33,11 @@ type LLMResponseContentUpdater interface {
 	UpdateLLMResponseContent(ctx context.Context, traceID, content string) error
 }
 
+// LLMRequestPromptUpdater updates asynchronously derived request prompt text.
+type LLMRequestPromptUpdater interface {
+	UpdateLLMRequestPrompt(ctx context.Context, traceID, prompt string) error
+}
+
 // TraceExporter streams trace records in stable timestamp order for backups or
 // external archival jobs.
 type TraceExporter interface {

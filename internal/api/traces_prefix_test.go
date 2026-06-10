@@ -59,14 +59,15 @@ func TestTracesHandlerFiltersAndReturnsProviderPrefix(t *testing.T) {
 		queryResult: &trace.TraceResult{
 			Items: []*trace.Trace{
 				{
-					ID:             "trace-prefix",
-					Timestamp:      now,
-					Provider:       "openai",
-					Model:          "gpt-5.5",
-					RequestMethod:  http.MethodPost,
-					RequestPath:    "/llmgateway/v1/responses",
-					ResponseStatus: http.StatusOK,
-					CreatedAt:      now,
+					ID:               "trace-prefix",
+					Timestamp:        now,
+					Provider:         "openai",
+					Model:            "gpt-5.5",
+					RequestMethod:    http.MethodPost,
+					RequestPath:      "/llmgateway/v1/responses",
+					LLMRequestPrompt: "hidden prompt",
+					ResponseStatus:   http.StatusOK,
+					CreatedAt:        now,
 				},
 			},
 			TotalCount: 1,
@@ -108,6 +109,14 @@ func TestTracesHandlerFiltersAndReturnsProviderPrefix(t *testing.T) {
 	if body.Items[0].Endpoint != "/v1/responses" {
 		t.Fatalf("endpoint=%q, want /v1/responses", body.Items[0].Endpoint)
 	}
+	var rawBody map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &rawBody); err != nil {
+		t.Fatalf("decode raw response: %v", err)
+	}
+	rawItems := rawBody["items"].([]any)
+	if _, ok := rawItems[0].(map[string]any)["llm_request_prompt"]; ok {
+		t.Fatalf("list item unexpectedly included llm_request_prompt: %v", rawItems[0])
+	}
 }
 
 func TestTracesHandlerRejectsUnknownProviderPrefix(t *testing.T) {
@@ -135,14 +144,15 @@ func TestTraceDetailReturnsProviderPrefix(t *testing.T) {
 	store := &prefixTraceStore{
 		traceByID: map[string]*trace.Trace{
 			"trace-prefix": {
-				ID:             "trace-prefix",
-				Timestamp:      now,
-				Provider:       "openai",
-				Model:          "gpt-5.5",
-				RequestMethod:  http.MethodPost,
-				RequestPath:    "/llmgateway/v1/responses",
-				ResponseStatus: http.StatusOK,
-				CreatedAt:      now,
+				ID:               "trace-prefix",
+				Timestamp:        now,
+				Provider:         "openai",
+				Model:            "gpt-5.5",
+				RequestMethod:    http.MethodPost,
+				RequestPath:      "/llmgateway/v1/responses",
+				LLMRequestPrompt: "latest prompt",
+				ResponseStatus:   http.StatusOK,
+				CreatedAt:        now,
 			},
 		},
 	}
@@ -164,6 +174,7 @@ func TestTraceDetailReturnsProviderPrefix(t *testing.T) {
 		Provider       string `json:"provider"`
 		ProviderPrefix string `json:"provider_prefix"`
 		Endpoint       string `json:"endpoint"`
+		RequestPrompt  string `json:"llm_request_prompt"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -173,6 +184,9 @@ func TestTraceDetailReturnsProviderPrefix(t *testing.T) {
 	}
 	if body.Endpoint != "/v1/responses" {
 		t.Fatalf("endpoint=%q, want /v1/responses", body.Endpoint)
+	}
+	if body.RequestPrompt != "latest prompt" {
+		t.Fatalf("llm_request_prompt=%q, want latest prompt", body.RequestPrompt)
 	}
 }
 
@@ -198,5 +212,8 @@ func TestDashboardInjectsProviderPrefixes(t *testing.T) {
 	}
 	if !strings.Contains(body, `const providerPrefixes = ["/llmgateway","/openai"];`) {
 		t.Fatalf("dashboard body missing provider prefix config")
+	}
+	if !strings.Contains(body, `请求文本`) || !strings.Contains(body, `id="detailPrompt"`) {
+		t.Fatal("dashboard body missing request prompt detail block")
 	}
 }

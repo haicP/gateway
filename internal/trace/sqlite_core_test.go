@@ -38,23 +38,24 @@ func TestSQLiteStoreCoreTraceLifecycle(t *testing.T) {
 			LatencyMS:       20,
 		},
 		{
-			ID:              "trace-new",
-			Timestamp:       base,
-			CreatedAt:       base,
-			OrgID:           "default",
-			WorkspaceID:     "default",
-			Provider:        "llm",
-			Model:           "gpt-new",
-			RequestMethod:   "POST",
-			RequestPath:     "/llm/v1/responses",
-			RequestHeaders:  `{"X-API-Key":["[REDACTED]"]}`,
-			RequestBody:     `{"model":"gpt-new"}`,
-			ResponseStatus:  201,
-			ResponseHeaders: `{"Content-Type":["application/json"]}`,
-			ResponseBody:    `{"usage":{"total_tokens":9}}`,
-			TotalTokens:     9,
-			LatencyMS:       40,
-			Metadata:        `{"streaming":false}`,
+			ID:               "trace-new",
+			Timestamp:        base,
+			CreatedAt:        base,
+			OrgID:            "default",
+			WorkspaceID:      "default",
+			Provider:         "llm",
+			Model:            "gpt-new",
+			RequestMethod:    "POST",
+			RequestPath:      "/llm/v1/responses",
+			RequestHeaders:   `{"X-API-Key":["[REDACTED]"]}`,
+			RequestBody:      `{"model":"gpt-new"}`,
+			LLMRequestPrompt: "stored prompt",
+			ResponseStatus:   201,
+			ResponseHeaders:  `{"Content-Type":["application/json"]}`,
+			ResponseBody:     `{"usage":{"total_tokens":9}}`,
+			TotalTokens:      9,
+			LatencyMS:        40,
+			Metadata:         `{"streaming":false}`,
 		},
 	}
 	if err := store.WriteBatch(ctx, traces); err != nil {
@@ -76,6 +77,19 @@ func TestSQLiteStoreCoreTraceLifecycle(t *testing.T) {
 	if got.RequestBody != `{"model":"gpt-new"}` || got.ResponseBody == "" {
 		t.Fatalf("GetTrace() body=%q/%q, want full request and response bodies", got.RequestBody, got.ResponseBody)
 	}
+	if got.LLMRequestPrompt != "stored prompt" {
+		t.Fatalf("GetTrace() llm_request_prompt=%q, want stored prompt", got.LLMRequestPrompt)
+	}
+	if err := store.UpdateLLMRequestPrompt(ctx, "trace-new", "updated prompt"); err != nil {
+		t.Fatalf("UpdateLLMRequestPrompt() error: %v", err)
+	}
+	got, err = store.GetTrace(ctx, "trace-new")
+	if err != nil {
+		t.Fatalf("GetTrace() after prompt update error: %v", err)
+	}
+	if got.LLMRequestPrompt != "updated prompt" {
+		t.Fatalf("updated llm_request_prompt=%q, want updated prompt", got.LLMRequestPrompt)
+	}
 
 	page, err := store.QueryTraces(ctx, TraceFilter{Provider: "llm", Limit: 1})
 	if err != nil {
@@ -83,6 +97,9 @@ func TestSQLiteStoreCoreTraceLifecycle(t *testing.T) {
 	}
 	if len(page.Items) != 1 || page.Items[0].ID != "trace-new" {
 		t.Fatalf("QueryTraces() items=%v, want newest trace first", traceIDs(page.Items))
+	}
+	if page.Items[0].LLMRequestPrompt != "" {
+		t.Fatalf("summary llm_request_prompt=%q, want empty", page.Items[0].LLMRequestPrompt)
 	}
 	if page.NextCursor == "" {
 		t.Fatal("QueryTraces() next cursor is empty, want pagination cursor")

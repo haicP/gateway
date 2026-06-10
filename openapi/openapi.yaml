@@ -269,6 +269,8 @@ components:
               additionalProperties: true
             response_body:
               type: string
+            llm_request_prompt:
+              type: string
             llm_response_content:
               nullable: true
             metadata:

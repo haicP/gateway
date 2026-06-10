@@ -20,11 +20,12 @@ const (
 )
 
 type llmResponseContentEnricher struct {
-	store   trace.TraceStore
-	updater trace.LLMResponseContentUpdater
-	logger  *slog.Logger
-	queue   chan string
-	timeout time.Duration
+	store                  trace.TraceStore
+	responseContentUpdater trace.LLMResponseContentUpdater
+	requestPromptUpdater   trace.LLMRequestPromptUpdater
+	logger                 *slog.Logger
+	queue                  chan string
+	timeout                time.Duration
 
 	queueMu  sync.RWMutex
 	wg       sync.WaitGroup
@@ -33,8 +34,12 @@ type llmResponseContentEnricher struct {
 }
 
 func newLLMResponseContentEnricher(store trace.TraceStore, logger *slog.Logger, bufferSize int, timeout time.Duration) *llmResponseContentEnricher {
-	updater, ok := store.(trace.LLMResponseContentUpdater)
-	if !ok || store == nil {
+	if store == nil {
+		return nil
+	}
+	responseUpdater, hasResponseUpdater := store.(trace.LLMResponseContentUpdater)
+	requestUpdater, hasRequestUpdater := store.(trace.LLMRequestPromptUpdater)
+	if !hasResponseUpdater && !hasRequestUpdater {
 		return nil
 	}
 	if bufferSize <= 0 {
@@ -44,11 +49,12 @@ func newLLMResponseContentEnricher(store trace.TraceStore, logger *slog.Logger, 
 		timeout = llmResponseContentEnrichTimeout
 	}
 	return &llmResponseContentEnricher{
-		store:   store,
-		updater: updater,
-		logger:  logger,
-		queue:   make(chan string, bufferSize),
-		timeout: timeout,
+		store:                  store,
+		responseContentUpdater: responseUpdater,
+		requestPromptUpdater:   requestUpdater,
+		logger:                 logger,
+		queue:                  make(chan string, bufferSize),
+		timeout:                timeout,
 	}
 }
 
@@ -133,35 +139,69 @@ func (e *llmResponseContentEnricher) enrich(traceID string) {
 		return
 	}
 	if !traceEligibleForLLMResponseContent(item) {
+		e.enrichRequestPrompt(ctx, traceID, item)
 		return
 	}
+	e.enrichRequestPrompt(ctx, traceID, item)
 	metadata := trace.DecodeMetadataMap(item.Metadata)
 	streaming, _ := trace.MetadataBool(metadata, "streaming")
 	content, ok := extractLLMResponseContentJSON([]byte(item.ResponseBody), streaming)
 	if !ok {
 		return
 	}
-	if err := e.updater.UpdateLLMResponseContent(ctx, traceID, content); err != nil {
+	if e.responseContentUpdater == nil {
+		return
+	}
+	if err := e.responseContentUpdater.UpdateLLMResponseContent(ctx, traceID, content); err != nil {
 		if e.logger != nil {
 			e.logger.WarnContext(ctx, "failed to update llm response content", "trace_id", traceID, "error", err)
 		}
 	}
 }
 
+func (e *llmResponseContentEnricher) enrichRequestPrompt(ctx context.Context, traceID string, item *trace.Trace) {
+	if e == nil || e.requestPromptUpdater == nil || !traceEligibleForLLMRequestPrompt(item) {
+		return
+	}
+	prompt, ok := extractLLMRequestPrompt([]byte(item.RequestBody))
+	if !ok {
+		return
+	}
+	if err := e.requestPromptUpdater.UpdateLLMRequestPrompt(ctx, traceID, prompt); err != nil {
+		if e.logger != nil {
+			e.logger.WarnContext(ctx, "failed to update llm request prompt", "trace_id", traceID, "error", err)
+		}
+	}
+}
+
 func traceEligibleForLLMResponseContent(item *trace.Trace) bool {
-	if item == nil || strings.TrimSpace(item.ResponseBody) == "" || strings.TrimSpace(item.LLMResponseContent) != "" {
+	if item == nil || strings.TrimSpace(item.ResponseBody) == "" || strings.TrimSpace(item.LLMResponseContent) != "" || traceHasStorageRedactionSkip(item) {
 		return false
+	}
+	return true
+}
+
+func traceEligibleForLLMRequestPrompt(item *trace.Trace) bool {
+	if item == nil || strings.TrimSpace(item.RequestBody) == "" || strings.TrimSpace(item.LLMRequestPrompt) != "" || traceHasStorageRedactionSkip(item) {
+		return false
+	}
+	return true
+}
+
+func traceHasStorageRedactionSkip(item *trace.Trace) bool {
+	if item == nil {
+		return true
 	}
 	metadata := trace.DecodeMetadataMap(item.Metadata)
 	if status := trace.MetadataString(metadata, "body_pii_status"); status == "skipped_large_body" {
-		return false
+		return true
 	}
 	for _, key := range []string{"redaction_storage_skipped", "redaction_storage_drop"} {
 		if value, ok := trace.MetadataBool(metadata, key); ok && value {
-			return false
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 func shutdownLLMResponseContentEnricher(logger *slog.Logger, enricher *llmResponseContentEnricher, timeout time.Duration) {

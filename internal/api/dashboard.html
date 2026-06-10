@@ -799,6 +799,10 @@
           <pre id="detailRequest">-</pre>
         </div>
         <div class="body-block">
+          <label>请求文本</label>
+          <pre id="detailPrompt">-</pre>
+        </div>
+        <div class="body-block">
           <label>回复文本</label>
           <pre id="detailResponse">-</pre>
         </div>
@@ -1132,6 +1136,7 @@
       $('detailEndpoint').textContent = '-';
       $('detailStatus').textContent = '-';
       $('detailRequest').textContent = '加载中...';
+      $('detailPrompt').textContent = '加载中...';
       $('detailResponse').textContent = '加载中...';
 
       try {
@@ -1147,9 +1152,11 @@
         $('detailStatus').textContent = String(detail.response_status || '-');
         $('detailSubTitle').textContent = formatDate(detail.created_at || detail.timestamp);
         $('detailRequest').textContent = summarizeText(detail.request_body);
+        $('detailPrompt').textContent = summarizeText(detail.llm_request_prompt);
         $('detailResponse').textContent = summarizeText(responseText(detail));
       } catch (err) {
         $('detailRequest').textContent = '-';
+        $('detailPrompt').textContent = '-';
         $('detailResponse').textContent = err.message || '加载失败';
       }
     }

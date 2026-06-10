@@ -133,6 +133,7 @@ func writePostgresTraceRow(ctx context.Context, execer postgresExecer, row *Trac
     response_status,
     response_headers,
     response_body,
+    llm_request_prompt,
     llm_response_content,
     input_tokens,
     output_tokens,
@@ -160,9 +161,9 @@ func writePostgresTraceRow(ctx context.Context, execer postgresExecer, row *Trac
     $12,
     NULLIF($13, '')::jsonb,
     $14,
-    NULLIF($15, '')::jsonb,
-    $16,
-	    $17,
+	    $15,
+	    NULLIF($16, '')::jsonb,
+    $17,
 	    $18,
 	    $19,
 	    $20,
@@ -170,8 +171,9 @@ func writePostgresTraceRow(ctx context.Context, execer postgresExecer, row *Trac
 	    $22,
 	    $23,
 	    $24,
-	    NULLIF($25, '')::jsonb,
-	    $26
+	    $25,
+	    NULLIF($26, '')::jsonb,
+	    $27
 	)`,
 		mainRow.ID,
 		nullIfEmpty(mainRow.TraceGroupID),
@@ -187,6 +189,7 @@ func writePostgresTraceRow(ctx context.Context, execer postgresExecer, row *Trac
 		mainRow.ResponseStatus,
 		mainRow.ResponseHeaders,
 		mainRow.ResponseBody,
+		mainRow.LLMRequestPrompt,
 		mainRow.LLMResponseContent,
 		mainRow.InputTokens,
 		mainRow.OutputTokens,
@@ -422,6 +425,7 @@ INSERT INTO traces (
     response_status,
     response_headers,
     response_body,
+    llm_request_prompt,
     llm_response_content,
     input_tokens,
     output_tokens,
@@ -449,8 +453,8 @@ INSERT INTO traces (
     $12,
     NULLIF($13, '')::jsonb,
     $14,
-    NULLIF($15, '')::jsonb,
-    $16,
+    $15,
+    NULLIF($16, '')::jsonb,
     $17,
     $18,
     $19,
@@ -459,8 +463,9 @@ INSERT INTO traces (
     $22,
     $23,
     $24,
-    NULLIF($25, '')::jsonb,
-    $26
+    $25,
+    NULLIF($26, '')::jsonb,
+    $27
 )`)
 	if err != nil {
 		return fmt.Errorf("prepare postgres batch insert: %w", err)
@@ -485,6 +490,7 @@ INSERT INTO traces (
 			mainRow.ResponseStatus,
 			mainRow.ResponseHeaders,
 			mainRow.ResponseBody,
+			mainRow.LLMRequestPrompt,
 			mainRow.LLMResponseContent,
 			mainRow.InputTokens,
 			mainRow.OutputTokens,
@@ -527,6 +533,7 @@ COALESCE(request_body, ''),
 response_status,
 COALESCE(response_headers::text, ''),
 COALESCE(response_body, ''),
+COALESCE(llm_request_prompt, ''),
 COALESCE(llm_response_content::text, ''),
 input_tokens,
 output_tokens,
@@ -556,6 +563,7 @@ COALESCE(request_headers::text, ''),
 response_status,
 COALESCE(response_headers::text, ''),
 '' AS response_body,
+'' AS llm_request_prompt,
 '' AS llm_response_content,
 input_tokens,
 output_tokens,
@@ -615,6 +623,28 @@ WHERE id = $1`, traceID, content)
 	affected, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("read llm response content update row count %q: %w", traceID, err)
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PostgresStore) UpdateLLMRequestPrompt(ctx context.Context, traceID, prompt string) error {
+	traceID = strings.TrimSpace(traceID)
+	if traceID == "" {
+		return nil
+	}
+	result, err := s.db.ExecContext(ctx, `
+UPDATE traces
+SET llm_request_prompt = NULLIF($2, '')
+WHERE id = $1`, traceID, prompt)
+	if err != nil {
+		return fmt.Errorf("update llm request prompt %q: %w", traceID, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read llm request prompt update row count %q: %w", traceID, err)
 	}
 	if affected == 0 {
 		return ErrNotFound
@@ -970,6 +1000,7 @@ func scanPostgresTraceRow(scanner rowScanner) (*Trace, error) {
 		responseStatus     sql.NullInt64
 		responseHeaders    sql.NullString
 		responseBody       sql.NullString
+		llmRequestPrompt   sql.NullString
 		llmResponseContent sql.NullString
 		inputTokens        sql.NullInt64
 		outputTokens       sql.NullInt64
@@ -999,6 +1030,7 @@ func scanPostgresTraceRow(scanner rowScanner) (*Trace, error) {
 		&responseStatus,
 		&responseHeaders,
 		&responseBody,
+		&llmRequestPrompt,
 		&llmResponseContent,
 		&inputTokens,
 		&outputTokens,
@@ -1041,6 +1073,9 @@ func scanPostgresTraceRow(scanner rowScanner) (*Trace, error) {
 	}
 	if responseBody.Valid {
 		item.ResponseBody = responseBody.String
+	}
+	if llmRequestPrompt.Valid {
+		item.LLMRequestPrompt = llmRequestPrompt.String
 	}
 	if llmResponseContent.Valid {
 		item.LLMResponseContent = llmResponseContent.String
@@ -1107,6 +1142,7 @@ func scanPostgresTraceExportRow(scanner rowScanner) (*Trace, error) {
 		responseStatus     sql.NullInt64
 		responseHeaders    sql.NullString
 		responseBody       sql.NullString
+		llmRequestPrompt   sql.NullString
 		llmResponseContent sql.NullString
 		inputTokens        sql.NullInt64
 		outputTokens       sql.NullInt64
@@ -1138,6 +1174,7 @@ func scanPostgresTraceExportRow(scanner rowScanner) (*Trace, error) {
 		&responseStatus,
 		&responseHeaders,
 		&responseBody,
+		&llmRequestPrompt,
 		&llmResponseContent,
 		&inputTokens,
 		&outputTokens,
@@ -1182,6 +1219,9 @@ func scanPostgresTraceExportRow(scanner rowScanner) (*Trace, error) {
 	}
 	if responseBody.Valid {
 		item.ResponseBody = responseBody.String
+	}
+	if llmRequestPrompt.Valid {
+		item.LLMRequestPrompt = llmRequestPrompt.String
 	}
 	if llmResponseContent.Valid {
 		item.LLMResponseContent = llmResponseContent.String
@@ -1294,6 +1334,7 @@ func (s *PostgresStore) ensureOptionalColumnsLocked() error {
 		`ALTER TABLE traces ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT 'default';`,
 		`ALTER TABLE traces ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';`,
 		`ALTER TABLE traces ADD COLUMN IF NOT EXISTS gateway_key_id TEXT;`,
+		`ALTER TABLE traces ADD COLUMN IF NOT EXISTS llm_request_prompt TEXT;`,
 		`ALTER TABLE traces ADD COLUMN IF NOT EXISTS llm_response_content JSONB;`,
 		`UPDATE traces SET gateway_key_id = NULLIF(metadata ->> 'gateway_key_id', '') WHERE gateway_key_id IS NULL;`,
 		`CREATE INDEX IF NOT EXISTS idx_traces_org_workspace_created_at_id ON traces(org_id, workspace_id, created_at DESC, id DESC);`,
